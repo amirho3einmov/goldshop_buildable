@@ -1,4 +1,4 @@
-name: Build APK (robust, improved SDK installer)
+name: Build APK (fixed AIDL issue)
 
 on:
   push:
@@ -24,106 +24,59 @@ jobs:
         distribution: 'temurin'
         java-version: '17'
 
-    - name: Install system packages (ncurses, build tools etc.)
+    - name: Install system packages
       run: |
         sudo apt-get update -y
         sudo apt-get install -y git python3-pip python3-dev build-essential unzip zip \
           libncurses-dev libtinfo-dev libssl-dev libffi-dev liblzma-dev libbz2-dev zlib1g-dev \
           autoconf automake libtool pkg-config curl ca-certificates
 
-    - name: Install Android SDK cmdline-tools, platform-tools, build-tools and NDK (robust)
-      id: install_sdk
+    - name: Install Android SDK and NDK
       run: |
-        set -euo pipefail
-
+        set -e
+        
+        # Create Android SDK directory
         export ANDROID_SDK_ROOT=/usr/local/lib/android/sdk
-        export PATH="$ANDROID_SDK_ROOT/platform-tools:$PATH"
-        sudo mkdir -p "$ANDROID_SDK_ROOT"
-        sudo chown -R $USER:$USER "$ANDROID_SDK_ROOT"
-
-        # If sdkmanager already exists somewhere on PATH or in sdk dir, use it
-        if command -v sdkmanager >/dev/null 2>&1; then
-          SDKMANAGER_CMD="$(command -v sdkmanager)"
-          echo "Found sdkmanager on PATH: $SDKMANAGER_CMD"
-        elif [ -x "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" ]; then
-          SDKMANAGER_CMD="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
-          echo "Found sdkmanager at $SDKMANAGER_CMD"
-        elif [ -x "$ANDROID_SDK_ROOT/cmdline-tools/bin/sdkmanager" ]; then
-          SDKMANAGER_CMD="$ANDROID_SDK_ROOT/cmdline-tools/bin/sdkmanager"
-          echo "Found sdkmanager at $SDKMANAGER_CMD"
-        else
-          # download command-line tools (with retry)
-          TMP_ZIP="/tmp/cmdline-tools.zip"
-          URL="https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip"
-          echo "sdkmanager not found — will download commandlinetools from $URL"
-          # retry curl a few times
-          curl -fsSL --retry 3 --retry-delay 5 -o "$TMP_ZIP" "$URL"
-
-          # unpack to a temp dir
-          TMP_UNPACK="/tmp/cmdline-tools-unpack-$$"
-          mkdir -p "$TMP_UNPACK"
-          unzip -q "$TMP_ZIP" -d "$TMP_UNPACK"
-
-          # The zip contains a top-level 'cmdline-tools' folder; move its contents into latest.
-          TARGET_DIR="$ANDROID_SDK_ROOT/cmdline-tools/latest"
-          # If target exists and is not empty, remove it to avoid mv errors (safe in CI)
-          if [ -d "$TARGET_DIR" ] && [ "$(ls -A "$TARGET_DIR")" ]; then
-            echo "Target $TARGET_DIR exists and is not empty — removing it to allow fresh install"
-            rm -rf "$TARGET_DIR"
-          fi
-          mkdir -p "$TARGET_DIR"
-          # move inner contents (works even if structure slightly changes)
-          if [ -d "$TMP_UNPACK/cmdline-tools" ]; then
-            mv "$TMP_UNPACK/cmdline-tools/"* "$TARGET_DIR/"
-          else
-            # fallback: copy everything
-            mv "$TMP_UNPACK"/* "$TARGET_DIR/" 2>/dev/null || true
-          fi
-          rm -rf "$TMP_UNPACK" "$TMP_ZIP"
-          SDKMANAGER_CMD="$TARGET_DIR/bin/sdkmanager"
-          echo "Downloaded and installed cmdline-tools to $TARGET_DIR"
-        fi
-
-        chmod +x "$SDKMANAGER_CMD" || true
-        echo "Using sdkmanager: $SDKMANAGER_CMD"
-
-        # First, accept all licenses before installing
-        mkdir -p "$ANDROID_SDK_ROOT/licenses"
-        echo -e "\n8933bad161af4178b1185d1a37fbf41ea5269c55\nd56f5187479451eabf01fb78af6dfcb131a6481e\n24333f8a63b6825ea9c5514f83c2829b004d1fee" > "$ANDROID_SDK_ROOT/licenses/android-sdk-license"
-        echo -e "84831b9409646a918e30573bab4c9c91346d8abd\n504667f4c0de7af1a06de9f4b1727b84351f2910" > "$ANDROID_SDK_ROOT/licenses/android-sdk-preview-license"
-
-        # Install required components (adjust versions here if needed)
-        # Use retries for sdkmanager calls (wrap in a small loop)
-        pkgs=("platform-tools" "platforms;android-33" "build-tools;33.0.2" "ndk;25.2.9519653")
-        for pkg in "${pkgs[@]}"; do
-          attempt=0
-          max_attempts=3
-          while [ $attempt -lt $max_attempts ]; do
-            echo "Installing $pkg (attempt $((attempt+1)))..."
-            if yes | "$SDKMANAGER_CMD" --sdk_root="$ANDROID_SDK_ROOT" "$pkg"; then
-              break
-            fi
-            attempt=$((attempt+1))
-            sleep 5
-          done
-          if [ $attempt -eq $max_attempts ]; then
-            echo "Warning: failed to install $pkg after $max_attempts retries (continuing, may fail later)"
-          fi
-        done
-
-        # Accept licenses again to catch any missed ones
-        yes | "$SDKMANAGER_CMD" --sdk_root="$ANDROID_SDK_ROOT" --licenses || true
-
-        # ensure platform-tools and cmdline-tools are on PATH
-        export PATH="$ANDROID_SDK_ROOT/platform-tools:$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$PATH"
-
-        # sanity output
-        echo "aidl -> $(command -v aidl 2>/dev/null || echo 'not found')"
-        echo "ndk dirs -> $(ls -d $ANDROID_SDK_ROOT/ndk/* 2>/dev/null || echo 'none')"
-        echo "build-tools -> $(ls -d $ANDROID_SDK_ROOT/build-tools/* 2>/dev/null || echo 'none')"
-        echo "platforms -> $(ls -d $ANDROID_SDK_ROOT/platforms/* 2>/dev/null || echo 'none')"
-        echo "SDKMANAGER_CMD = $SDKMANAGER_CMD"
-        ls -la "$ANDROID_SDK_ROOT" || true
+        sudo mkdir -p $ANDROID_SDK_ROOT
+        sudo chown -R $USER:$USER $ANDROID_SDK_ROOT
+        
+        # Download and install command line tools
+        cd /tmp
+        wget -q https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip
+        mkdir -p $ANDROID_SDK_ROOT/cmdline-tools/latest
+        unzip -q commandlinetools-linux-9477386_latest.zip -d $ANDROID_SDK_ROOT/cmdline-tools/latest
+        mv $ANDROID_SDK_ROOT/cmdline-tools/latest/cmdline-tools/* $ANDROID_SDK_ROOT/cmdline-tools/latest/
+        rm -rf $ANDROID_SDK_ROOT/cmdline-tools/latest/cmdline-tools
+        rm commandlinetools-linux-9477386_latest.zip
+        
+        # Set PATH for sdkmanager
+        export PATH=$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$PATH
+        
+        # Pre-accept all licenses
+        mkdir -p $ANDROID_SDK_ROOT/licenses
+        echo -e "8933bad161af4178b1185d1a37fbf41ea5269c55" > $ANDROID_SDK_ROOT/licenses/android-sdk-license
+        echo -e "84831b9409646a918e30573bab4c9c91346d8abd" >> $ANDROID_SDK_ROOT/licenses/android-sdk-license
+        echo -e "d56f5187479451eabf01fb78af6dfcb131a6481e" >> $ANDROID_SDK_ROOT/licenses/android-sdk-license
+        echo -e "24333f8a63b6825ea9c5514f83c2829b004d1fee" >> $ANDROID_SDK_ROOT/licenses/android-sdk-license
+        echo -e "504667f4c0de7af1a06de9f4b1727b84351f2910" >> $ANDROID_SDK_ROOT/licenses/android-sdk-preview-license
+        
+        # Install platform tools first
+        sdkmanager --sdk_root=$ANDROID_SDK_ROOT "platform-tools"
+        
+        # Install platforms and build-tools
+        sdkmanager --sdk_root=$ANDROID_SDK_ROOT "platforms;android-33"
+        sdkmanager --sdk_root=$ANDROID_SDK_ROOT "build-tools;33.0.2"
+        
+        # Install NDK
+        sdkmanager --sdk_root=$ANDROID_SDK_ROOT "ndk;25.2.9519653"
+        
+        # Accept licenses again to be sure
+        yes | sdkmanager --sdk_root=$ANDROID_SDK_ROOT --licenses > /dev/null 2>&1 || true
+        
+        # Verify AIDL is available
+        echo "=== Checking AIDL ==="
+        find $ANDROID_SDK_ROOT -name "aidl" -type f | head -5
+        $ANDROID_SDK_ROOT/build-tools/33.0.2/aidl --version || echo "AIDL version check failed but continuing"
 
     - name: Set up Python virtual environment
       run: |
@@ -132,7 +85,7 @@ jobs:
         echo "VIRTUAL_ENV=$PWD/buildozer-venv" >> $GITHUB_ENV
         echo "$PWD/buildozer-venv/bin" >> $GITHUB_PATH
 
-    - name: Install buildozer & python deps in virtual environment
+    - name: Install buildozer & python deps
       run: |
         source buildozer-venv/bin/activate
         python3 -m pip install --upgrade pip setuptools wheel
@@ -140,45 +93,91 @@ jobs:
         python3 -m pip install --upgrade buildozer
         buildozer --version
 
-    - name: Check buildozer.spec and set correct Android SDK paths
+    - name: Configure buildozer environment
+      run: |
+        echo "ANDROID_SDK_ROOT=/usr/local/lib/android/sdk" >> $GITHUB_ENV
+        echo "ANDROID_NDK_HOME=/usr/local/lib/android/sdk/ndk/25.2.9519653" >> $GITHUB_ENV
+        echo "ANDROID_HOME=/usr/local/lib/android/sdk" >> $GITHUB_ENV
+        
+        # Create critical environment file for buildozer
+        mkdir -p $HOME/.buildozer
+        cat > $HOME/.buildozer/android_env.sh << 'EOF'
+export ANDROID_SDK_ROOT="/usr/local/lib/android/sdk"
+export ANDROID_NDK_HOME="/usr/local/lib/android/sdk/ndk/25.2.9519653"
+export ANDROID_HOME="/usr/local/lib/android/sdk"
+export PATH="/usr/local/lib/android/sdk/build-tools/33.0.2:$PATH"
+export PATH="/usr/local/lib/android/sdk/platform-tools:$PATH"
+export PATH="/usr/local/lib/android/sdk/cmdline-tools/latest/bin:$PATH"
+EOF
+
+    - name: Create proper buildozer.spec
       run: |
         if [ ! -f buildozer.spec ]; then
-          echo "ERROR: buildozer.spec not found in repo root"
-          ls -la
-          exit 1
+          buildozer init
         fi
         
-        # Set Android SDK and NDK paths in environment
-        echo "ANDROIDSDK=/usr/local/lib/android/sdk" >> $GITHUB_ENV
-        echo "ANDROIDNDK=/usr/local/lib/android/sdk/ndk/25.2.9519653" >> $GITHUB_ENV
-        echo "ANDROIDAPI=33" >> $GITHUB_ENV
-        
-        # Patch buildozer.spec if needed
-        if ! grep -q "^android.sdk_path" buildozer.spec; then
-          echo "android.sdk_path = /usr/local/lib/android/sdk" >> buildozer.spec
-        fi
-        
-        if ! grep -q "^android.ndk_path" buildozer.spec; then
-          echo "android.ndk_path = /usr/local/lib/android/sdk/ndk/25.2.9519653" >> buildozer.spec
-        fi
-        
-        if ! grep -q "^p4a.branch" buildozer.spec; then
-          echo "p4a.branch = develop" >> buildozer.spec
-        fi
-        
-        if ! grep -q "^android.ndk" buildozer.spec; then
-          echo "android.ndk = 25b" >> buildozer.spec
-        fi
-        
-        echo "=== buildozer.spec (first 200 lines) ==="
-        sed -n '1,200p' buildozer.spec
+        # Create a clean buildozer.spec that uses system SDK
+        cat > buildozer.spec << 'EOF'
+[app]
+title = MyApp
+package.name = myapp
+package.domain = org.mydomain
+source.dir = .
+source.include_exts = py,png,jpg,kv,atlas
+version = 0.1
+requirements = python3,kivy
+orientation = portrait
+osx.python_version = 3
+osx.kivy_version = 1.9.1
+fullscreen = 0
 
-    - name: Prepare HOME and .buildozer directory
+[buildozer]
+log_level = 2
+warn_on_root = 1
+
+[app:android]
+# Use system Android SDK
+android.sdk_path = /usr/local/lib/android/sdk
+android.ndk_path = /usr/local/lib/android/sdk/ndk/25.2.9519653
+android.ndk_version = 25b
+android.api = 33
+android.minapi = 21
+android.sdk_build_tools = 33.0.2
+android.accept_sdk_license = True
+android.allow_backup = True
+android.fast_async = True
+
+# Python-for-Android settings
+p4a.branch = develop
+p4a.options = --dir=./
+
+# Permissions
+android.permissions = INTERNET,WRITE_EXTERNAL_STORAGE,READ_EXTERNAL_STORAGE
+
+# Archs
+android.arch = arm64-v8a, armeabi-v7a
+
+# Presplash and icon (adjust paths as needed)
+# presplash.filename = %(source.dir)s/presplash.png
+# icon.filename = %(source.dir)s/icon.png
+EOF
+
+        echo "=== Final buildozer.spec ==="
+        cat buildozer.spec
+
+    - name: Prepare buildozer directories
       run: |
         export HOME="${GITHUB_WORKSPACE}"
         mkdir -p "$HOME/.buildozer"
         mkdir -p "$HOME/.buildozer/android/platform"
-        echo "HOME set to: $HOME"
+        
+        # Create symlinks so buildozer finds the SDK where it expects
+        mkdir -p "$HOME/.buildozer/android/platform/android-sdk"
+        ln -sf /usr/local/lib/android/sdk/* "$HOME/.buildozer/android/platform/android-sdk/" || true
+        
+        # Specifically ensure build-tools are linked
+        mkdir -p "$HOME/.buildozer/android/platform/android-sdk/build-tools"
+        ln -sf /usr/local/lib/android/sdk/build-tools/33.0.2 "$HOME/.buildozer/android/platform/android-sdk/build-tools/33.0.2" || true
 
     - name: Build APK (debug)
       env:
@@ -188,14 +187,30 @@ jobs:
         HOME: ${{ github.workspace }}
       run: |
         source buildozer-venv/bin/activate
-        export PATH="/usr/local/lib/android/sdk/platform-tools:/usr/local/lib/android/sdk/cmdline-tools/latest/bin:/usr/local/lib/android/sdk/build-tools/33.0.2:$PATH"
-        echo "PATH: $PATH"
-        echo "Buildozer path: $(which buildozer)"
-        echo "AIDL path: $(which aidl || echo 'aidl not found')"
-        echo "Android SDK build-tools contents:"
-        ls -la /usr/local/lib/android/sdk/build-tools/ || echo "No build-tools directory"
-        ls -la /usr/local/lib/android/sdk/build-tools/*/aidl 2>/dev/null || echo "AIDL not found in build-tools"
+        source $HOME/.buildozer/android_env.sh
         
+        echo "=== Environment Verification ==="
+        echo "ANDROID_SDK_ROOT: $ANDROID_SDK_ROOT"
+        echo "ANDROID_HOME: $ANDROID_HOME"
+        echo "ANDROID_NDK_HOME: $ANDROID_NDK_HOME"
+        echo "PATH: $PATH"
+        
+        echo "=== AIDL Verification ==="
+        which aidl || echo "AIDL not in PATH"
+        find /usr/local/lib/android/sdk -name "aidl" -type f 2>/dev/null | head -5
+        if [ -f "/usr/local/lib/android/sdk/build-tools/33.0.2/aidl" ]; then
+          echo "AIDL found at: /usr/local/lib/android/sdk/build-tools/33.0.2/aidl"
+          /usr/local/lib/android/sdk/build-tools/33.0.2/aidl --version || echo "Could not get AIDL version"
+        else
+          echo "AIDL not found in expected location"
+          # Try to find AIDL anywhere
+          find /usr/local/lib/android/sdk -name "aidl" -exec ls -la {} \; 2>/dev/null || echo "No AIDL found in SDK"
+        fi
+        
+        echo "=== Build Tools Contents ==="
+        ls -la /usr/local/lib/android/sdk/build-tools/33.0.2/ | head -10
+        
+        echo "=== Starting Buildozer ==="
         buildozer --version
         buildozer -v android debug
 
@@ -204,3 +219,4 @@ jobs:
       with:
         name: apk
         path: bin/*.apk
+      if: always()
