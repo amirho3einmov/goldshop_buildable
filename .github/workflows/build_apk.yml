@@ -119,18 +119,20 @@ jobs:
         echo "SDKMANAGER_CMD = $SDKMANAGER_CMD"
         ls -la "$ANDROID_SDK_ROOT" || true
 
-    - name: Install buildozer & python deps (system python)
-      id: install_buildozer
+    - name: Set up Python virtual environment
       run: |
+        python3 -m venv buildozer-venv
+        source buildozer-venv/bin/activate
+        echo "VIRTUAL_ENV=$PWD/buildozer-venv" >> $GITHUB_ENV
+        echo "$PWD/buildozer-venv/bin" >> $GITHUB_PATH
+
+    - name: Install buildozer & python deps in virtual environment
+      run: |
+        source buildozer-venv/bin/activate
         python3 -m pip install --upgrade pip setuptools wheel
         python3 -m pip install --upgrade Cython virtualenv
         python3 -m pip install --upgrade buildozer
-        # Get the exact path where buildozer was installed
-        USER_BASE=$(python3 -m site --user-base)
-        USER_BIN="$USER_BASE/bin"
-        echo "USER_BIN=$USER_BIN" >> $GITHUB_PATH
-        echo "Buildozer installed at: $USER_BIN/buildozer"
-        $USER_BIN/buildozer --version
+        buildozer --version
 
     - name: Ensure buildozer.spec exists & patch recommended settings
       run: |
@@ -159,9 +161,11 @@ jobs:
         ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
         HOME: ${{ github.workspace }}
       run: |
+        source buildozer-venv/bin/activate
         export PATH="/usr/local/lib/android/sdk/platform-tools:/usr/local/lib/android/sdk/cmdline-tools/latest/bin:$PATH"
         echo "PATH: $PATH"
         echo "Buildozer path: $(which buildozer)"
+        echo "Python path: $(which python3)"
         buildozer --version
         buildozer -v android debug
 
