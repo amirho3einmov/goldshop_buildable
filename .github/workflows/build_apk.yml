@@ -120,15 +120,17 @@ jobs:
         ls -la "$ANDROID_SDK_ROOT" || true
 
     - name: Install buildozer & python deps (system python)
+      id: install_buildozer
       run: |
         python3 -m pip install --upgrade pip setuptools wheel
         python3 -m pip install --upgrade Cython virtualenv
         python3 -m pip install --upgrade buildozer
-        export USER_BASE=$(python3 -m site --user-base)
-        export PATH="$USER_BASE/bin:$PATH"
-        which buildozer || python3 -m buildozer --version
-        buildozer --version || true
-        python3 -m pip list
+        # Get the exact path where buildozer was installed
+        USER_BASE=$(python3 -m site --user-base)
+        USER_BIN="$USER_BASE/bin"
+        echo "USER_BIN=$USER_BIN" >> $GITHUB_PATH
+        echo "Buildozer installed at: $USER_BIN/buildozer"
+        $USER_BIN/buildozer --version
 
     - name: Ensure buildozer.spec exists & patch recommended settings
       run: |
@@ -157,9 +159,11 @@ jobs:
         ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
         HOME: ${{ github.workspace }}
       run: |
-        export PATH="/usr/local/lib/android/sdk/platform-tools:/usr/local/lib/android/sdk/cmdline-tools/latest/bin:$(python3 -m site --user-base)/bin:$PATH"
+        export PATH="/usr/local/lib/android/sdk/platform-tools:/usr/local/lib/android/sdk/cmdline-tools/latest/bin:$PATH"
         echo "PATH: $PATH"
-        python3 -m buildozer -v android debug
+        echo "Buildozer path: $(which buildozer)"
+        buildozer --version
+        buildozer -v android debug
 
     - name: Upload APK artifact
       uses: actions/upload-artifact@v4
