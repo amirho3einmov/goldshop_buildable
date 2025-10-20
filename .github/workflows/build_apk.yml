@@ -55,12 +55,14 @@ jobs:
         fi
 
     - name: Build APK (debug) using venv
-      # don't override HOME at job level; we set it inside the step to a safe path
+      env:
+        HOME: ${{ github.workspace }}
       run: |
-        # set HOME to the workspace (writable) so buildozer won't try to use "/"
-        export HOME="${GITHUB_WORKSPACE}"
+        # put venv/bin at front of PATH so 'cython' and other tools are found
+        export PATH="${{ github.workspace }}/.venv/bin:$PATH"
         mkdir -p "$HOME/.buildozer"
         echo "HOME set to: $HOME"
+        echo "PATH: $PATH"
         # use the python inside the created venv to run buildozer
         .venv/bin/python -m buildozer -v android debug
 
