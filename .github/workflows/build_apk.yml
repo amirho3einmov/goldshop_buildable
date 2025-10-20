@@ -1,112 +1,53 @@
-name: Build APK (robust, improved SDK installer)
-
-on:
-  push:
-    branches: [ main ]
-  workflow_dispatch:
-
-permissions:
-  contents: read
-  packages: write
-
-jobs:
-  build-apk:
-    runs-on: ubuntu-latest
-    timeout-minutes: 360
-
-    steps:
-    - name: Checkout repo
-      uses: actions/checkout@v4
-
-    - name: Setup Java (OpenJDK 17)
-      uses: actions/setup-java@v4
-      with:
-        distribution: 'temurin'
-        java-version: '17'
-
-    - name: Install system packages (ncurses, build tools etc.)
-      run: |
-        sudo apt-get update -y
-        sudo apt-get install -y git python3-pip python3-dev build-essential unzip zip \
-          libncurses-dev libtinfo-dev libssl-dev libffi-dev liblzma-dev libbz2-dev zlib1g-dev \
-          autoconf automake libtool pkg-config curl ca-certificates
-
-    - name: Install Android SDK cmdline-tools, platform-tools, build-tools and NDK (robust)
+     name: Install Android SDK cmdline-tools, platform-tools, build-tools and NDK (robust, safer)
       id: install_sdk
       run: |
         set -euo pipefail
 
         export ANDROID_SDK_ROOT=/usr/local/lib/android/sdk
         export PATH="$ANDROID_SDK_ROOT/platform-tools:$PATH"
-        mkdir -p "$ANDROID_SDK_ROOT"
+        sudo mkdir -p "$ANDROID_SDK_ROOT"
+        sudo chown -R "$USER":"$USER" "$ANDROID_SDK_ROOT" || true
 
-        # If sdkmanager already exists somewhere on PATH or in sdk dir, use it
+        # Try to find sdkmanager first
         if command -v sdkmanager >/dev/null 2>&1; then
           SDKMANAGER_CMD="$(command -v sdkmanager)"
-          echo "Found sdkmanager on PATH: $SDKMANAGER_CMD"
-        elif [ -x "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" ]; then
-          SDKMANAGER_CMD="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
-          echo "Found sdkmanager at $SDKMANAGER_CMD"
-        elif [ -x "$ANDROID_SDK_ROOT/cmdline-tools/bin/sdkmanager" ]; then
-          SDKMANAGER_CMD="$ANDROID_SDK_ROOT/cmdline-tools/bin/sdkmanager"
-          echo "Found sdkmanager at $SDKMANAGER_CMD"
+          echo "Using existing sdkmanager: $SDKMANAGER_CMD"
         else
-          # download command-line tools (with retry)
           TMP_ZIP="/tmp/cmdline-tools.zip"
           URL="https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip"
-          echo "sdkmanager not found — will download commandlinetools from $URL"
-          # retry curl a few times
+          echo "Downloading Android commandline tools from $URL"
           curl -fsSL --retry 3 --retry-delay 5 -o "$TMP_ZIP" "$URL"
 
-          # unpack to a temp dir
           TMP_UNPACK="/tmp/cmdline-tools-unpack-$$"
           mkdir -p "$TMP_UNPACK"
           unzip -q "$TMP_ZIP" -d "$TMP_UNPACK"
 
-          # The zip contains a top-level 'cmdline-tools' folder; move its contents into latest.
           TARGET_DIR="$ANDROID_SDK_ROOT/cmdline-tools/latest"
-          # If target exists and is not empty, remove it to avoid mv errors (safe in CI)
           if [ -d "$TARGET_DIR" ] && [ "$(ls -A "$TARGET_DIR")" ]; then
-            echo "Target $TARGET_DIR exists and is not empty — removing it to allow fresh install"
+            echo "Removing existing $TARGET_DIR to avoid mv conflict"
             sudo rm -rf "$TARGET_DIR"
           fi
-          mkdir -p "$TARGET_DIR"
-          # move inner contents (works even if structure slightly changes)
+          sudo mkdir -p "$TARGET_DIR"
+          # move extracted content into target
           if [ -d "$TMP_UNPACK/cmdline-tools" ]; then
-            mv "$TMP_UNPACK/cmdline-tools/"* "$TARGET_DIR/"
+            sudo mv "$TMP_UNPACK/cmdline-tools/"* "$TARGET_DIR/"
           else
-            # fallback: copy everything
-            mv "$TMP_UNPACK"/* "$TARGET_DIR/" || true
+            sudo mv "$TMP_UNPACK/"* "$TARGET_DIR/" || true
           fi
           rm -rf "$TMP_UNPACK" "$TMP_ZIP"
           SDKMANAGER_CMD="$TARGET_DIR/bin/sdkmanager"
-          echo "Downloaded and installed cmdline-tools to $TARGET_DIR"
+          echo "Installed cmdline-tools to $TARGET_DIR"
         fi
 
         chmod +x "$SDKMANAGER_CMD" || true
-        echo "Using sdkmanager: $SDKMANAGER_CMD"
+        echo "sdkmanager location: $SDKMANAGER_CMD"
 
-        # Install required components (adjust versions here if needed)
-        # Use retries for sdkmanager calls (wrap in a small loop)
-        pkgs=("platform-tools" "platforms;android-33" "build-tools;33.0.2" "cmdline-tools;latest" "ndk;25.2.9519653")
-        for pkg in "${pkgs[@]}"; do
-          attempt=0
-          until [ $attempt -ge 3 ]; do
-            echo "Installing $pkg (attempt $((attempt+1)))..."
-            yes | "$SDKMANAGER_CMD" --sdk_root="$ANDROID_SDK_ROOT" "$pkg" && break
-            attempt=$((attempt+1))
-            sleep 5
-          done
-          if [ $attempt -ge 3 ]; then
-            echo "Warning: failed to install $pkg after retries (continuing, may fail later)"
-          fi
-        done
-
-        # ensure platform-tools and cmdline-tools are on PATH
-        export PATH="$ANDROID_SDK_ROOT/platform-tools:$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$PATH"
-
-        # Accept licenses
-        yes | "$SDKMANAGER_CMD" --sdk_root="$ANDROID_SDK_ROOT" --licenses || true
-
-        # sanity output
-        echo "aidl -> $(
+        # Install required items (explicit calls). If sdkmanager fails transiently, retry each call.
+        install_pkg() {
+          local pkg="$1"
+          local n=0
+          until [ $n -ge 4 ]; do
+            echo "Installing $pkg (attempt $((n+1)))..."
+            if yes | "$SDKMANAGER_CMD" --sdk_root="$ANDROID_SDK_ROOT" "$pkg"; then
+              return 0
+           
