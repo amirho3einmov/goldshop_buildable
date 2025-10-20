@@ -1,0 +1,60 @@
+name: Build APK
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    steps:
+    - name: Checkout repo
+      uses: actions/checkout@v4
+
+    - name: Setup Java (OpenJDK 17)
+      uses: actions/setup-java@v4
+      with:
+        distribution: 'temurin'
+        java-version: '17'
+
+    - name: Install system packages
+      run: |
+        sudo apt-get update -y
+        sudo apt-get install -y git python3-pip python3-dev build-essential unzip zip \
+          libncurses5 libncurses5-dev libssl-dev libffi-dev liblzma-dev libbz2-dev zlib1g-dev \
+          autoconf automake libtool pkg-config
+
+    - name: Install buildozer & python deps
+      run: |
+        python3 -m pip install --upgrade pip setuptools wheel
+        python3 -m pip install --upgrade Cython virtualenv
+        python3 -m pip install --upgrade buildozer
+        export PATH="${PATH}:$(python3 -m site --user-base)/bin"
+        python3 -m buildozer --version
+
+    - name: Show repo files
+      run: ls -la
+
+    - name: Ensure buildozer.spec exists
+      run: |
+        if [ ! -f buildozer.spec ]; then
+          echo "ERROR: buildozer.spec not found in repo root"
+          ls -la
+          exit 1
+        fi
+
+    - name: Build APK (debug)
+      env:
+        HOME: ${{ runner.home }}
+      run: |
+        export PATH="${PATH}:$(python3 -m site --user-base)/bin"
+        python3 -m buildozer -v android debug
+
+    - name: Upload APK artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: apk
+        path: bin/*.apk
