@@ -8,11 +8,16 @@ on:
 jobs:
   build-apk:
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 240
 
     steps:
     - name: Checkout repo
       uses: actions/checkout@v4
+
+    - name: Setup Python 3
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'   # یا '3.10' اگر خواستی
 
     - name: Setup Java (OpenJDK 17)
       uses: actions/setup-java@v4
@@ -23,18 +28,22 @@ jobs:
     - name: Install system packages
       run: |
         sudo apt-get update -y
-        sudo apt-get install -y git python3-pip python3-dev build-essential unzip zip \
+        sudo apt-get install -y git python3-dev build-essential unzip zip \
           libncurses-dev libtinfo-dev libssl-dev libffi-dev liblzma-dev libbz2-dev zlib1g-dev \
           autoconf automake libtool pkg-config
 
-    - name: Install buildozer & python deps
+    - name: Create virtualenv and install buildozer
       run: |
-        python3 -m pip install --upgrade pip setuptools wheel
-        python3 -m pip install --upgrade Cython virtualenv
-        python3 -m pip install --upgrade buildozer
-        # ensure buildozer is in PATH for this job
-        export PATH="${PATH}:$(python3 -m site --user-base)/bin"
-        python3 -m buildozer --version
+        python -m venv .venv
+        .venv/bin/pip install --upgrade pip setuptools wheel
+        .venv/bin/pip install --upgrade Cython virtualenv
+        # install buildozer (and p4a when build runs)
+        .venv/bin/pip install --no-cache-dir --upgrade buildozer
+        # sanity check
+        echo "Python in venv:"
+        .venv/bin/python -V
+        echo "pip list in venv:"
+        .venv/bin/pip list
 
     - name: Show repo files
       run: ls -la
@@ -47,14 +56,12 @@ jobs:
           exit 1
         fi
 
-    - name: Build APK (debug)
+    - name: Build APK (debug) using venv
       env:
         HOME: ${{ runner.home }}
       run: |
-        # make sure local user-base bin is on PATH for this step too
-        export PATH="${PATH}:$(python3 -m site --user-base)/bin"
-        # optional: you can force a particular p4a branch or p4a arguments by editing buildozer.spec
-        python3 -m buildozer -v android debug
+        # use the python inside the created venv to run buildozer
+        .venv/bin/python -m buildozer -v android debug
 
     - name: Upload APK artifact
       uses: actions/upload-artifact@v4
