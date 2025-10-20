@@ -1,4 +1,4 @@
-name: Build APK (robust)
+name: Build APK (robust, improved SDK installer)
 
 on:
   push:
@@ -31,98 +31,82 @@ jobs:
           libncurses-dev libtinfo-dev libssl-dev libffi-dev liblzma-dev libbz2-dev zlib1g-dev \
           autoconf automake libtool pkg-config curl ca-certificates
 
-    - name: Install Android SDK commandline tools & packages (aidl / build-tools / ndk)
+    - name: Install Android SDK cmdline-tools, platform-tools, build-tools and NDK (robust)
       id: install_sdk
       run: |
-        set -e
+        set -euo pipefail
+
         export ANDROID_SDK_ROOT=/usr/local/lib/android/sdk
         export PATH="$ANDROID_SDK_ROOT/platform-tools:$PATH"
         mkdir -p "$ANDROID_SDK_ROOT"
 
-        # Find or install sdkmanager (command-line tools)
+        # If sdkmanager already exists somewhere on PATH or in sdk dir, use it
         if command -v sdkmanager >/dev/null 2>&1; then
           SDKMANAGER_CMD="$(command -v sdkmanager)"
-        else
-          # download command-line tools (latest official)
-          TMP_ZIP="/tmp/cmdline-tools.zip"
-          echo "Downloading Android commandline tools..."
-          curl -fsSL -o "$TMP_ZIP" "https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip"
-          mkdir -p "$ANDROID_SDK_ROOT/cmdline-tools/latest"
-          unzip -q "$TMP_ZIP" -d /tmp/cmdline-tools-unpack
-          mv /tmp/cmdline-tools-unpack/cmdline-tools/* "$ANDROID_SDK_ROOT/cmdline-tools/latest/"
-          rm -rf "$TMP_ZIP" /tmp/cmdline-tools-unpack
+          echo "Found sdkmanager on PATH: $SDKMANAGER_CMD"
+        elif [ -x "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" ]; then
           SDKMANAGER_CMD="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          echo "Found sdkmanager at $SDKMANAGER_CMD"
+        elif [ -x "$ANDROID_SDK_ROOT/cmdline-tools/bin/sdkmanager" ]; then
+          SDKMANAGER_CMD="$ANDROID_SDK_ROOT/cmdline-tools/bin/sdkmanager"
+          echo "Found sdkmanager at $SDKMANAGER_CMD"
+        else
+          # download command-line tools (with retry)
+          TMP_ZIP="/tmp/cmdline-tools.zip"
+          URL="https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip"
+          echo "sdkmanager not found — will download commandlinetools from $URL"
+          # retry curl a few times
+          curl -fsSL --retry 3 --retry-delay 5 -o "$TMP_ZIP" "$URL"
+
+          # unpack to a temp dir
+          TMP_UNPACK="/tmp/cmdline-tools-unpack-$$"
+          mkdir -p "$TMP_UNPACK"
+          unzip -q "$TMP_ZIP" -d "$TMP_UNPACK"
+
+          # The zip contains a top-level 'cmdline-tools' folder; move its contents into latest.
+          TARGET_DIR="$ANDROID_SDK_ROOT/cmdline-tools/latest"
+          # If target exists and is not empty, remove it to avoid mv errors (safe in CI)
+          if [ -d "$TARGET_DIR" ] && [ "$(ls -A "$TARGET_DIR")" ]; then
+            echo "Target $TARGET_DIR exists and is not empty — removing it to allow fresh install"
+            sudo rm -rf "$TARGET_DIR"
+          fi
+          mkdir -p "$TARGET_DIR"
+          # move inner contents (works even if structure slightly changes)
+          if [ -d "$TMP_UNPACK/cmdline-tools" ]; then
+            mv "$TMP_UNPACK/cmdline-tools/"* "$TARGET_DIR/"
+          else
+            # fallback: copy everything
+            mv "$TMP_UNPACK"/* "$TARGET_DIR/" || true
+          fi
+          rm -rf "$TMP_UNPACK" "$TMP_ZIP"
+          SDKMANAGER_CMD="$TARGET_DIR/bin/sdkmanager"
+          echo "Downloaded and installed cmdline-tools to $TARGET_DIR"
         fi
 
-        chmod +x "$SDKMANAGER_CMD"
+        chmod +x "$SDKMANAGER_CMD" || true
         echo "Using sdkmanager: $SDKMANAGER_CMD"
 
-        # Install platform-tools, platform (API 33), build-tools and NDK r25.*
-        # (Change versions if your app needs different API level)
-        yes | "$SDKMANAGER_CMD" --sdk_root="$ANDROID_SDK_ROOT" "platform-tools" \
-          "platforms;android-33" "build-tools;33.0.2" "cmdline-tools;latest" \
-          "ndk;25.2.9519653" || true
+        # Install required components (adjust versions here if needed)
+        # Use retries for sdkmanager calls (wrap in a small loop)
+        pkgs=("platform-tools" "platforms;android-33" "build-tools;33.0.2" "cmdline-tools;latest" "ndk;25.2.9519653")
+        for pkg in "${pkgs[@]}"; do
+          attempt=0
+          until [ $attempt -ge 3 ]; do
+            echo "Installing $pkg (attempt $((attempt+1)))..."
+            yes | "$SDKMANAGER_CMD" --sdk_root="$ANDROID_SDK_ROOT" "$pkg" && break
+            attempt=$((attempt+1))
+            sleep 5
+          done
+          if [ $attempt -ge 3 ]; then
+            echo "Warning: failed to install $pkg after retries (continuing, may fail later)"
+          fi
+        done
 
+        # ensure platform-tools and cmdline-tools are on PATH
         export PATH="$ANDROID_SDK_ROOT/platform-tools:$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$PATH"
+
         # Accept licenses
         yes | "$SDKMANAGER_CMD" --sdk_root="$ANDROID_SDK_ROOT" --licenses || true
 
-        # Sanity checks
-        echo "aidl -> $(command -v aidl || echo 'not found')"
-        echo "ndk -> $(ls -d $ANDROID_SDK_ROOT/ndk/* || true)"
-        echo "build-tools -> $(ls -d $ANDROID_SDK_ROOT/build-tools/* || true)"
-
-    - name: Install buildozer & python deps (system python)
-      run: |
-        # install buildozer and deps using system python to avoid venv --user issues
-        python3 -m pip install --upgrade pip setuptools wheel
-        python3 -m pip install --upgrade Cython virtualenv
-        python3 -m pip install --upgrade buildozer
-        # ensure user-base bin is on PATH (in case pip used --user)
-        export USER_BASE=$(python3 -m site --user-base)
-        echo "USER_BASE=$USER_BASE"
-        export PATH="$USER_BASE/bin:$PATH"
-        which buildozer || python3 -m buildozer --version
-        buildozer --version || true
-        python3 -m pip list
-
-    - name: Ensure buildozer.spec exists & patch recommended settings
-      run: |
-        if [ ! -f buildozer.spec ]; then
-          echo "ERROR: buildozer.spec not found in repo root"
-          ls -la
-          exit 1
-        fi
-        # If not present, add recommended p4a branch + ndk line to improve CI compatibility
-        if ! grep -q "^p4a.branch" buildozer.spec; then
-          echo "p4a.branch = develop" >> buildozer.spec
-        fi
-        if ! grep -q "^android.ndk" buildozer.spec; then
-          echo "android.ndk = 25b" >> buildozer.spec
-        fi
-        echo "buildozer.spec patched (if needed):"
-        sed -n '1,200p' buildozer.spec
-
-    - name: Prepare HOME and .buildozer directory
-      run: |
-        export HOME="${GITHUB_WORKSPACE}"
-        mkdir -p "$HOME/.buildozer"
-        mkdir -p "$HOME/.buildozer/android/platform"
-        echo "HOME set to: $HOME"
-
-    - name: Build APK (debug)
-      env:
-        ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
-        HOME: ${{ github.workspace }}
-      run: |
-        # ensure sdk tools and user-base bin are on PATH
-        export PATH="/usr/local/lib/android/sdk/platform-tools:/usr/local/lib/android/sdk/cmdline-tools/latest/bin:$(python3 -m site --user-base)/bin:$PATH"
-        echo "PATH: $PATH"
-        # run buildozer using system python
-        python3 -m buildozer -v android debug
-
-    - name: Upload APK artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: apk
-        path: bin/*.apk
+        # sanity output
+        echo "aidl -> $(
