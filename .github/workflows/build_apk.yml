@@ -32,16 +32,19 @@ jobs:
           libncurses-dev libtinfo-dev libssl-dev libffi-dev liblzma-dev libbz2-dev zlib1g-dev \
           autoconf automake libtool pkg-config
 
-    - name: Create virtualenv and install buildozer
+    - name: Install buildozer & python deps (system python)
       run: |
-        python -m venv .venv
-        .venv/bin/pip install --upgrade pip setuptools wheel
-        .venv/bin/pip install --upgrade Cython virtualenv
-        .venv/bin/pip install --no-cache-dir --upgrade buildozer
-        echo "Python in venv:"
-        .venv/bin/python -V
-        echo "pip list in venv:"
-        .venv/bin/pip list
+        # install buildozer and dependences using system python (not --user)
+        python3 -m pip install --upgrade pip setuptools wheel
+        python3 -m pip install --upgrade Cython virtualenv
+        python3 -m pip install --upgrade buildozer
+        # in some runners pip may install to user base; add it to PATH just in case
+        export USER_BASE=$(python3 -m site --user-base)
+        echo "USER_BASE=$USER_BASE"
+        export PATH="$USER_BASE/bin:$PATH"
+        which buildozer || python3 -m buildozer --version
+        buildozer --version || true
+        python3 -m pip list
 
     - name: Show repo files
       run: ls -la
@@ -54,17 +57,23 @@ jobs:
           exit 1
         fi
 
-    - name: Build APK (debug) using venv
+    - name: Prepare HOME for buildozer
+      run: |
+        # make sure HOME is writable and buildozer uses workspace for caches
+        export HOME="${GITHUB_WORKSPACE}"
+        mkdir -p "$HOME/.buildozer"
+        echo "HOME set to: $HOME"
+        ls -la "$HOME"
+
+    - name: Build APK (debug)
       env:
         HOME: ${{ github.workspace }}
       run: |
-        # put venv/bin at front of PATH so 'cython' and other tools are found
-        export PATH="${{ github.workspace }}/.venv/bin:$PATH"
-        mkdir -p "$HOME/.buildozer"
-        echo "HOME set to: $HOME"
+        # ensure user-base bin is on PATH (if pip used --user)
+        export PATH="$(python3 -m site --user-base)/bin:$PATH"
         echo "PATH: $PATH"
-        # use the python inside the created venv to run buildozer
-        .venv/bin/python -m buildozer -v android debug
+        # run buildozer with system python
+        python3 -m buildozer -v android debug
 
     - name: Upload APK artifact
       uses: actions/upload-artifact@v4
