@@ -38,7 +38,8 @@ jobs:
 
         export ANDROID_SDK_ROOT=/usr/local/lib/android/sdk
         export PATH="$ANDROID_SDK_ROOT/platform-tools:$PATH"
-        mkdir -p "$ANDROID_SDK_ROOT"
+        sudo mkdir -p "$ANDROID_SDK_ROOT"
+        sudo chown -R $USER:$USER "$ANDROID_SDK_ROOT"
 
         # If sdkmanager already exists somewhere on PATH or in sdk dir, use it
         if command -v sdkmanager >/dev/null 2>&1; then
@@ -68,7 +69,7 @@ jobs:
           # If target exists and is not empty, remove it to avoid mv errors (safe in CI)
           if [ -d "$TARGET_DIR" ] && [ "$(ls -A "$TARGET_DIR")" ]; then
             echo "Target $TARGET_DIR exists and is not empty — removing it to allow fresh install"
-            sudo rm -rf "$TARGET_DIR"
+            rm -rf "$TARGET_DIR"
           fi
           mkdir -p "$TARGET_DIR"
           # move inner contents (works even if structure slightly changes)
@@ -76,7 +77,7 @@ jobs:
             mv "$TMP_UNPACK/cmdline-tools/"* "$TARGET_DIR/"
           else
             # fallback: copy everything
-            mv "$TMP_UNPACK"/* "$TARGET_DIR/" || true
+            mv "$TMP_UNPACK"/* "$TARGET_DIR/" 2>/dev/null || true
           fi
           rm -rf "$TMP_UNPACK" "$TMP_ZIP"
           SDKMANAGER_CMD="$TARGET_DIR/bin/sdkmanager"
@@ -91,14 +92,17 @@ jobs:
         pkgs=("platform-tools" "platforms;android-33" "build-tools;33.0.2" "cmdline-tools;latest" "ndk;25.2.9519653")
         for pkg in "${pkgs[@]}"; do
           attempt=0
-          until [ $attempt -ge 3 ]; do
+          max_attempts=3
+          while [ $attempt -lt $max_attempts ]; do
             echo "Installing $pkg (attempt $((attempt+1)))..."
-            yes | "$SDKMANAGER_CMD" --sdk_root="$ANDROID_SDK_ROOT" "$pkg" && break
+            if yes | "$SDKMANAGER_CMD" --sdk_root="$ANDROID_SDK_ROOT" "$pkg"; then
+              break
+            fi
             attempt=$((attempt+1))
             sleep 5
           done
-          if [ $attempt -ge 3 ]; then
-            echo "Warning: failed to install $pkg after retries (continuing, may fail later)"
+          if [ $attempt -eq $max_attempts ]; then
+            echo "Warning: failed to install $pkg after $max_attempts retries (continuing, may fail later)"
           fi
         done
 
@@ -109,7 +113,7 @@ jobs:
         yes | "$SDKMANAGER_CMD" --sdk_root="$ANDROID_SDK_ROOT" --licenses || true
 
         # sanity output
-        echo "aidl -> $(command -v aidl || echo 'not found')"
+        echo "aidl -> $(command -v aidl 2>/dev/null || echo 'not found')"
         echo "ndk dirs -> $(ls -d $ANDROID_SDK_ROOT/ndk/* 2>/dev/null || echo 'none')"
         echo "build-tools -> $(ls -d $ANDROID_SDK_ROOT/build-tools/* 2>/dev/null || echo 'none')"
         echo "SDKMANAGER_CMD = $SDKMANAGER_CMD"
