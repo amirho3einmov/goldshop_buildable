@@ -1,4 +1,4 @@
-name: Build APK (use repo buildozer.spec)
+name: Build APK (robust, uses repo buildozer.spec)
 
 on:
   push:
@@ -15,7 +15,7 @@ jobs:
     timeout-minutes: 360
 
     steps:
-      - name: Checkout repo
+      - name: Checkout code
         uses: actions/checkout@v4
 
       - name: Setup Java (OpenJDK 17)
@@ -24,10 +24,10 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Install system packages (incl. rsync)
+      - name: Install system packages (rsync, unzip, wget etc.)
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y git python3-pip python3-dev build-essential unzip zip \
+          sudo apt-get install -y git python3-pip python3-dev build-essential unzip zip wget \
             libncurses-dev libtinfo-dev libssl-dev libffi-dev liblzma-dev libbz2-dev zlib1g-dev \
             autoconf automake libtool pkg-config curl ca-certificates rsync
 
@@ -36,15 +36,17 @@ jobs:
           ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
         run: |
           set -e
-          sudo mkdir -p "$ANDROID_SDK_ROOT"
-          sudo chown -R $USER:$USER "$ANDROID_SDK_ROOT"
+          SDK_ROOT="$ANDROID_SDK_ROOT"
+          sudo mkdir -p "$SDK_ROOT"
+          sudo chown -R $USER:$USER "$SDK_ROOT"
 
           cd /tmp
-          wget -q https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip
+          ZIP="commandlinetools-linux-9477386_latest.zip"
+          wget -q "https://dl.google.com/android/repository/${ZIP}"
 
           TMPDIR=$(mktemp -d)
-          unzip -q commandlinetools-linux-9477386_latest.zip -d "$TMPDIR"
-          mkdir -p "$ANDROID_SDK_ROOT/cmdline-tools/latest"
+          unzip -q "$ZIP" -d "$TMPDIR"
+          mkdir -p "$SDK_ROOT/cmdline-tools/latest"
 
           if [ -d "$TMPDIR/cmdline-tools" ]; then
             SRC_DIR="$TMPDIR/cmdline-tools"
@@ -53,63 +55,64 @@ jobs:
           fi
 
           if command -v rsync >/dev/null 2>&1; then
-            rsync -a "$SRC_DIR/" "$ANDROID_SDK_ROOT/cmdline-tools/latest/"
+            rsync -a "$SRC_DIR/" "$SDK_ROOT/cmdline-tools/latest/"
           else
-            cp -a "$SRC_DIR/." "$ANDROID_SDK_ROOT/cmdline-tools/latest/"
+            cp -a "$SRC_DIR/." "$SDK_ROOT/cmdline-tools/latest/"
           fi
 
           rm -rf "$TMPDIR"
-          rm -f commandlinetools-linux-9477386_latest.zip
+          rm -f "$ZIP"
 
-          export PATH="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$PATH"
+          # Make sdkmanager available in this shell and for later steps
+          echo "$SDK_ROOT/cmdline-tools/latest/bin" >> $GITHUB_PATH
+          export PATH="$SDK_ROOT/cmdline-tools/latest/bin:$PATH"
 
-          sdkmanager --sdk_root="$ANDROID_SDK_ROOT" "platform-tools" "platforms;android-33" "build-tools;33.0.2" "ndk;25.2.9519653"
+          # Install the required SDK pieces non-interactively
+          sdkmanager --sdk_root="$SDK_ROOT" "platform-tools" "platforms;android-33" "build-tools;33.0.2" "ndk;25.2.9519653"
 
-          yes | sdkmanager --sdk_root="$ANDROID_SDK_ROOT" --licenses || true
+          # accept licenses
+          yes | sdkmanager --sdk_root="$SDK_ROOT" --licenses || true
 
-          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
-          echo "ANDROID_HOME=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
-          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/25.2.9519653" >> $GITHUB_ENV
+          # Persist environment variables for later steps
+          echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> $GITHUB_ENV
+          echo "ANDROID_HOME=$SDK_ROOT" >> $GITHUB_ENV
+          echo "ANDROID_NDK_HOME=$SDK_ROOT/ndk/25.2.9519653" >> $GITHUB_ENV
 
-          echo "$ANDROID_SDK_ROOT/build-tools/33.0.2" >> $GITHUB_PATH
-          echo "$ANDROID_SDK_ROOT/platform-tools" >> $GITHUB_PATH
-          echo "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin" >> $GITHUB_PATH
+          # Ensure build-tools/platform-tools are also available in PATH for later steps
+          echo "$SDK_ROOT/build-tools/33.0.2" >> $GITHUB_PATH
+          echo "$SDK_ROOT/platform-tools" >> $GITHUB_PATH
 
-          if [ -f "$ANDROID_SDK_ROOT/build-tools/33.0.2/aidl" ]; then
-            sudo ln -sf "$ANDROID_SDK_ROOT/build-tools/33.0.2/aidl" /usr/local/bin/aidl
-            sudo chmod +x "$ANDROID_SDK_ROOT/build-tools/33.0.2/aidl"
+          # Symlink aidl to /usr/local/bin so it's globally available as a command
+          if [ -f "$SDK_ROOT/build-tools/33.0.2/aidl" ]; then
+            sudo ln -sf "$SDK_ROOT/build-tools/33.0.2/aidl" /usr/local/bin/aidl
+            sudo chmod +x "$SDK_ROOT/build-tools/33.0.2/aidl"
           fi
 
-          echo "=== AIDL check ==="
+          echo "=== SDK installed (diagnostics) ==="
+          which sdkmanager || true
+          sdkmanager --version || true
           which aidl || true
-          ls -la "$ANDROID_SDK_ROOT/build-tools/33.0.2/" | head -20
-          "$ANDROID_SDK_ROOT/build-tools/33.0.2/aidl" --version || echo "aidl version check failed"
+          ls -la "$SDK_ROOT/build-tools/33.0.2" | head -20 || true
 
-      - name: Set up Python virtual environment
+      - name: Set up Python virtual environment & install buildozer
         run: |
           python3 -m venv buildozer-venv
-          source buildozer-venv/bin/activate
-          echo "VIRTUAL_ENV=$PWD/buildozer-venv" >> $GITHUB_ENV
-          echo "$PWD/buildozer-venv/bin" >> $GITHUB_PATH
-
-      - name: Install buildozer & python deps
-        run: |
           source buildozer-venv/bin/activate
           python3 -m pip install --upgrade pip setuptools wheel
           python3 -m pip install --upgrade Cython virtualenv
           python3 -m pip install --upgrade buildozer
-          buildozer --version
+          buildozer --version || true
+        shell: bash
 
-      - name: Configure buildozer environment (write android_env.sh into both HOME and workspace)
+      - name: Configure android env script (write to both HOME and workspace)
         env:
-          # GITHUB_WORKSPACE is provided by GitHub Actions automatically
           WORKSPACE: ${{ github.workspace }}
         run: |
-          # ensure both locations exist and write the same android_env.sh to both
+          # ensure both dirs exist
           mkdir -p "$HOME/.buildozer"
           mkdir -p "$WORKSPACE/.buildozer"
 
-          # file content
+          # write identical android_env.sh to both locations (use simple echo to avoid heredoc indent issues)
           echo 'export ANDROID_SDK_ROOT="/usr/local/lib/android/sdk"' > "$HOME/.buildozer/android_env.sh"
           echo 'export ANDROID_NDK_HOME="/usr/local/lib/android/sdk/ndk/25.2.9519653"' >> "$HOME/.buildozer/android_env.sh"
           echo 'export ANDROID_HOME="/usr/local/lib/android/sdk"' >> "$HOME/.buildozer/android_env.sh"
@@ -118,77 +121,106 @@ jobs:
           echo 'export PATH="/usr/local/lib/android/sdk/cmdline-tools/latest/bin:$PATH"' >> "$HOME/.buildozer/android_env.sh"
           chmod +x "$HOME/.buildozer/android_env.sh"
 
-          # duplicate into workspace location (so sourcing WORKSPACE/.buildozer/android_env.sh works)
           cp -a "$HOME/.buildozer/android_env.sh" "$WORKSPACE/.buildozer/android_env.sh"
           chmod +x "$WORKSPACE/.buildozer/android_env.sh"
 
-          # also persist envs for later steps
+          # also persist env vars (safe/duplicate)
           echo "ANDROID_SDK_ROOT=/usr/local/lib/android/sdk" >> $GITHUB_ENV
           echo "ANDROID_NDK_HOME=/usr/local/lib/android/sdk/ndk/25.2.9519653" >> $GITHUB_ENV
           echo "ANDROID_HOME=/usr/local/lib/android/sdk" >> $GITHUB_ENV
 
-      - name: Show existing buildozer.spec (we will use repo file, not overwrite)
+      - name: Validate repo buildozer.spec exists
         run: |
-          echo "=== buildozer.spec in repo ==="
+          echo "=== Checking for buildozer.spec in repo ==="
           if [ -f buildozer.spec ]; then
             sed -n '1,200p' buildozer.spec || true
           else
-            echo "Error: buildozer.spec not found in repo. Aborting."
+            echo "Error: buildozer.spec not found in repository root. Aborting."
             exit 1
           fi
 
-      - name: Prepare buildozer directories (symlink SDK where buildozer expects)
+      - name: Prepare buildozer directories & compatibility symlinks
         env:
           WORKSPACE: ${{ github.workspace }}
+          ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
         run: |
-          mkdir -p "$WORKSPACE/.buildozer"
-          mkdir -p "$WORKSPACE/.buildozer/android/platform"
+          set -e
+          # create workspace buildozer layout
           mkdir -p "$WORKSPACE/.buildozer/android/platform/android-sdk"
-          ln -sf /usr/local/lib/android/sdk/* "$WORKSPACE/.buildozer/android/platform/android-sdk/" || true
+
+          # symlink SDK content into workspace .buildozer so buildozer finds platforms/build-tools/platform-tools
+          ln -sfn "$ANDROID_SDK_ROOT/"* "$WORKSPACE/.buildozer/android/platform/android-sdk/" || true
+
+          # ensure build-tools version link exists
           mkdir -p "$WORKSPACE/.buildozer/android/platform/android-sdk/build-tools"
-          ln -sf /usr/local/lib/android/sdk/build-tools/33.0.2 "$WORKSPACE/.buildozer/android/platform/android-sdk/build-tools/33.0.2" || true
+          ln -sfn "$ANDROID_SDK_ROOT/build-tools/33.0.2" "$WORKSPACE/.buildozer/android/platform/android-sdk/build-tools/33.0.2" || true
+
+          # Create tools/bin (legacy path) and link sdkmanager & avdmanager there so buildozer expecting old layout works
+          mkdir -p "$WORKSPACE/.buildozer/android/platform/android-sdk/tools/bin"
+          if [ -f "/usr/local/lib/android/sdk/cmdline-tools/latest/bin/sdkmanager" ]; then
+            ln -sfn "/usr/local/lib/android/sdk/cmdline-tools/latest/bin/sdkmanager" \
+                   "$WORKSPACE/.buildozer/android/platform/android-sdk/tools/bin/sdkmanager"
+          fi
+          if [ -f "/usr/local/lib/android/sdk/cmdline-tools/latest/bin/avdmanager" ]; then
+            ln -sfn "/usr/local/lib/android/sdk/cmdline-tools/latest/bin/avdmanager" \
+                   "$WORKSPACE/.buildozer/android/platform/android-sdk/tools/bin/avdmanager"
+          fi
+
+          # Also link the full cmdline-tools latest bin files into workspace path (defensive)
+          mkdir -p "$WORKSPACE/.buildozer/android/platform/android-sdk/cmdline-tools/latest/bin"
+          ln -sfn "/usr/local/lib/android/sdk/cmdline-tools/latest/bin/"* \
+                 "$WORKSPACE/.buildozer/android/platform/android-sdk/cmdline-tools/latest/bin/" || true
+
+          chmod -R a+rx "$WORKSPACE/.buildozer/android/platform/android-sdk" || true
+
+          echo "=== workspace SDK snapshot ==="
+          ls -la "$WORKSPACE/.buildozer/android/platform/android-sdk" | head -40 || true
+          echo "=== legacy tools/bin ==="
+          ls -la "$WORKSPACE/.buildozer/android/platform/android-sdk/tools/bin" || true
 
       - name: Build APK (debug) using repo buildozer.spec
         env:
+          WORKSPACE: ${{ github.workspace }}
           ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
           ANDROID_HOME: /usr/local/lib/android/sdk
           ANDROID_NDK_HOME: /usr/local/lib/android/sdk/ndk/25.2.9519653
           HOME: ${{ github.workspace }}
-          WORKSPACE: ${{ github.workspace }}
         run: |
+          set -e
           source buildozer-venv/bin/activate
 
-          # Try to source the android_env from workspace, otherwise from HOME (runner)
+          # Source android_env from workspace first (where buildozer expects), else fallback to HOME
           if [ -f "$WORKSPACE/.buildozer/android_env.sh" ]; then
-            echo "sourcing from workspace: $WORKSPACE/.buildozer/android_env.sh"
+            echo "Sourcing android_env from workspace"
             source "$WORKSPACE/.buildozer/android_env.sh"
           elif [ -f "$HOME/.buildozer/android_env.sh" ]; then
-            echo "sourcing from home: $HOME/.buildozer/android_env.sh"
+            echo "Sourcing android_env from HOME"
             source "$HOME/.buildozer/android_env.sh"
           else
             echo "Error: android_env.sh not found in workspace or HOME"
-            ls -la "$WORKSPACE" || true
             exit 1
           fi
 
-          echo "=== Environment Verification ==="
-          echo "ANDROID_SDK_ROOT: $ANDROID_SDK_ROOT"
-          echo "ANDROID_HOME: $ANDROID_HOME"
-          echo "ANDROID_NDK_HOME: $ANDROID_NDK_HOME"
-          echo "PATH: $PATH"
+          echo "=== Env check before build ==="
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          echo "ANDROID_NDK_HOME=$ANDROID_NDK_HOME"
+          echo "PATH=$PATH"
 
-          echo "=== AIDL Verification ==="
-          which aidl || echo "AIDL not in PATH"
-          find /usr/local/lib/android/sdk -name "aidl" -type f 2>/dev/null | head -5
+          echo "=== Tools diagnostics ==="
+          echo "Which sdkmanager:"
+          which sdkmanager || true
+          sdkmanager --version || true
+          echo "Which aidl:"
+          which aidl || true
           if [ -f "/usr/local/lib/android/sdk/build-tools/33.0.2/aidl" ]; then
-            echo "AIDL found at: /usr/local/lib/android/sdk/build-tools/33.0.2/aidl"
-            /usr/local/lib/android/sdk/build-tools/33.0.2/aidl --version || echo "Could not get AIDL version"
-          else
-            echo "AIDL not found in expected location"
-            find /usr/local/lib/android/sdk -name "aidl" -exec ls -la {} \; 2>/dev/null || echo "No AIDL found in SDK"
+            /usr/local/lib/android/sdk/build-tools/33.0.2/aidl --version || true
           fi
+          echo "List legacy tools/bin (workspace):"
+          ls -la "$WORKSPACE/.buildozer/android/platform/android-sdk/tools/bin" || true
 
-          echo "=== Starting Buildozer ==="
+          echo "=== Starting Buildozer build ==="
+          # use the buildozer.spec already in repo (do not init/overwrite)
           buildozer --verbose android debug
 
       - name: Upload APK artifact
