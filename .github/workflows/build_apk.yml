@@ -32,51 +32,57 @@ jobs:
           autoconf automake libtool pkg-config curl ca-certificates
 
     - name: Install Android SDK and NDK
+      env:
+        ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
       run: |
         set -e
-        
-        # Create Android SDK directory
-        export ANDROID_SDK_ROOT=/usr/local/lib/android/sdk
+
+        # Create Android SDK directory and give ownership to runner user
         sudo mkdir -p $ANDROID_SDK_ROOT
         sudo chown -R $USER:$USER $ANDROID_SDK_ROOT
-        
-        # Download and install command line tools
+
+        # Download command line tools and layout as required
         cd /tmp
         wget -q https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip
         mkdir -p $ANDROID_SDK_ROOT/cmdline-tools/latest
         unzip -q commandlinetools-linux-9477386_latest.zip -d $ANDROID_SDK_ROOT/cmdline-tools/latest
-        mv $ANDROID_SDK_ROOT/cmdline-tools/latest/cmdline-tools/* $ANDROID_SDK_ROOT/cmdline-tools/latest/
-        rm -rf $ANDROID_SDK_ROOT/cmdline-tools/latest/cmdline-tools
+        # some distributions put an extra cmdline-tools folder; normalize layout
+        if [ -d "$ANDROID_SDK_ROOT/cmdline-tools/latest/cmdline-tools" ]; then
+          mv $ANDROID_SDK_ROOT/cmdline-tools/latest/cmdline-tools/* $ANDROID_SDK_ROOT/cmdline-tools/latest/
+          rm -rf $ANDROID_SDK_ROOT/cmdline-tools/latest/cmdline-tools
+        fi
         rm commandlinetools-linux-9477386_latest.zip
-        
-        # Set PATH for sdkmanager
-        export PATH=$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$PATH
-        
-        # Pre-accept all licenses
-        mkdir -p $ANDROID_SDK_ROOT/licenses
-        echo -e "8933bad161af4178b1185d1a37fbf41ea5269c55" > $ANDROID_SDK_ROOT/licenses/android-sdk-license
-        echo -e "84831b9409646a918e30573bab4c9c91346d8abd" >> $ANDROID_SDK_ROOT/licenses/android-sdk-license
-        echo -e "d56f5187479451eabf01fb78af6dfcb131a6481e" >> $ANDROID_SDK_ROOT/licenses/android-sdk-license
-        echo -e "24333f8a63b6825ea9c5514f83c2829b004d1fee" >> $ANDROID_SDK_ROOT/licenses/android-sdk-license
-        echo -e "504667f4c0de7af1a06de9f4b1727b84351f2910" >> $ANDROID_SDK_ROOT/licenses/android-sdk-preview-license
-        
-        # Install platform tools first
-        sdkmanager --sdk_root=$ANDROID_SDK_ROOT "platform-tools"
-        
-        # Install platforms and build-tools
-        sdkmanager --sdk_root=$ANDROID_SDK_ROOT "platforms;android-33"
-        sdkmanager --sdk_root=$ANDROID_SDK_ROOT "build-tools;33.0.2"
-        
-        # Install NDK
-        sdkmanager --sdk_root=$ANDROID_SDK_ROOT "ndk;25.2.9519653"
-        
-        # Accept licenses again to be sure
-        yes | sdkmanager --sdk_root=$ANDROID_SDK_ROOT --licenses > /dev/null 2>&1 || true
-        
-        # Verify AIDL is available
-        echo "=== Checking AIDL ==="
-        find $ANDROID_SDK_ROOT -name "aidl" -type f | head -5
-        $ANDROID_SDK_ROOT/build-tools/33.0.2/aidl --version || echo "AIDL version check failed but continuing"
+
+        # Make sdkmanager available in this shell
+        export PATH="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$PATH"
+
+        # Ensure required SDK pieces are installed (platform-tools, platform & build-tools + NDK)
+        sdkmanager --sdk_root=$ANDROID_SDK_ROOT "platform-tools" "platforms;android-33" "build-tools;33.0.2" "ndk;25.2.9519653"
+
+        # Accept licenses non-interactively
+        yes | sdkmanager --sdk_root=$ANDROID_SDK_ROOT --licenses || true
+
+        # Export stable env variables into GITHUB_ENV so subsequent steps inherit them
+        echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
+        echo "ANDROID_HOME=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
+        echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/25.2.9519653" >> $GITHUB_ENV
+
+        # Ensure build-tools and platform-tools are on PATH for later steps
+        echo "$ANDROID_SDK_ROOT/build-tools/33.0.2" >> $GITHUB_PATH
+        echo "$ANDROID_SDK_ROOT/platform-tools" >> $GITHUB_PATH
+        echo "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin" >> $GITHUB_PATH
+
+        # Create a symlink for aidl into /usr/local/bin so 'aidl' is globally available as a command.
+        if [ -f "$ANDROID_SDK_ROOT/build-tools/33.0.2/aidl" ]; then
+          sudo ln -sf "$ANDROID_SDK_ROOT/build-tools/33.0.2/aidl" /usr/local/bin/aidl
+          sudo chmod +x "$ANDROID_SDK_ROOT/build-tools/33.0.2/aidl"
+        fi
+
+        # Quick verification output
+        echo "=== AIDL check ==="
+        which aidl || true
+        ls -la $ANDROID_SDK_ROOT/build-tools/33.0.2/ | head -20
+        $ANDROID_SDK_ROOT/build-tools/33.0.2/aidl --version || echo "aidl version check failed"
 
     - name: Set up Python virtual environment
       run: |
@@ -95,11 +101,11 @@ jobs:
 
     - name: Configure buildozer environment
       run: |
+        # Save environment vars for buildozer to read later too
         echo "ANDROID_SDK_ROOT=/usr/local/lib/android/sdk" >> $GITHUB_ENV
         echo "ANDROID_NDK_HOME=/usr/local/lib/android/sdk/ndk/25.2.9519653" >> $GITHUB_ENV
         echo "ANDROID_HOME=/usr/local/lib/android/sdk" >> $GITHUB_ENV
-        
-        # Create critical environment file for buildozer
+
         mkdir -p $HOME/.buildozer
         cat > $HOME/.buildozer/android_env.sh << 'EOF'
 export ANDROID_SDK_ROOT="/usr/local/lib/android/sdk"
@@ -115,8 +121,7 @@ EOF
         if [ ! -f buildozer.spec ]; then
           buildozer init
         fi
-        
-        # Create a clean buildozer.spec that uses system SDK
+
         cat > buildozer.spec << 'EOF'
 [app]
 title = MyApp
@@ -156,10 +161,6 @@ android.permissions = INTERNET,WRITE_EXTERNAL_STORAGE,READ_EXTERNAL_STORAGE
 
 # Archs
 android.arch = arm64-v8a, armeabi-v7a
-
-# Presplash and icon (adjust paths as needed)
-# presplash.filename = %(source.dir)s/presplash.png
-# icon.filename = %(source.dir)s/icon.png
 EOF
 
         echo "=== Final buildozer.spec ==="
@@ -170,11 +171,11 @@ EOF
         export HOME="${GITHUB_WORKSPACE}"
         mkdir -p "$HOME/.buildozer"
         mkdir -p "$HOME/.buildozer/android/platform"
-        
+
         # Create symlinks so buildozer finds the SDK where it expects
         mkdir -p "$HOME/.buildozer/android/platform/android-sdk"
         ln -sf /usr/local/lib/android/sdk/* "$HOME/.buildozer/android/platform/android-sdk/" || true
-        
+
         # Specifically ensure build-tools are linked
         mkdir -p "$HOME/.buildozer/android/platform/android-sdk/build-tools"
         ln -sf /usr/local/lib/android/sdk/build-tools/33.0.2 "$HOME/.buildozer/android/platform/android-sdk/build-tools/33.0.2" || true
@@ -188,13 +189,13 @@ EOF
       run: |
         source buildozer-venv/bin/activate
         source $HOME/.buildozer/android_env.sh
-        
+
         echo "=== Environment Verification ==="
         echo "ANDROID_SDK_ROOT: $ANDROID_SDK_ROOT"
         echo "ANDROID_HOME: $ANDROID_HOME"
         echo "ANDROID_NDK_HOME: $ANDROID_NDK_HOME"
         echo "PATH: $PATH"
-        
+
         echo "=== AIDL Verification ==="
         which aidl || echo "AIDL not in PATH"
         find /usr/local/lib/android/sdk -name "aidl" -type f 2>/dev/null | head -5
@@ -203,13 +204,12 @@ EOF
           /usr/local/lib/android/sdk/build-tools/33.0.2/aidl --version || echo "Could not get AIDL version"
         else
           echo "AIDL not found in expected location"
-          # Try to find AIDL anywhere
           find /usr/local/lib/android/sdk -name "aidl" -exec ls -la {} \; 2>/dev/null || echo "No AIDL found in SDK"
         fi
-        
+
         echo "=== Build Tools Contents ==="
-        ls -la /usr/local/lib/android/sdk/build-tools/33.0.2/ | head -10
-        
+        ls -la /usr/local/lib/android/sdk/build-tools/33.0.2/ | head -50
+
         echo "=== Starting Buildozer ==="
         buildozer --version
         buildozer -v android debug
