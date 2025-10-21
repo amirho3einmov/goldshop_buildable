@@ -58,16 +58,16 @@ jobs:
     - name: Install Android SDK and NDK
       run: |
         # Create Android SDK directory
-        mkdir -p $HOME/android-sdk
-        export ANDROID_SDK_ROOT=$HOME/android-sdk
-        export ANDROID_HOME=$ANDROID_SDK_ROOT
+        mkdir -p "$HOME/android-sdk"
+        export ANDROID_SDK_ROOT="$HOME/android-sdk"
+        export ANDROID_HOME="$ANDROID_SDK_ROOT"
         
         # Download and install Android Command Line Tools
-        cd $HOME
+        cd "$HOME"
         wget -q https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip
         unzip -q commandlinetools-linux-9477386_latest.zip
-        mkdir -p $ANDROID_SDK_ROOT/cmdline-tools/latest
-        mv cmdline-tools/* $ANDROID_SDK_ROOT/cmdline-tools/latest/
+        mkdir -p "$ANDROID_SDK_ROOT/cmdline-tools/latest"
+        mv cmdline-tools/* "$ANDROID_SDK_ROOT/cmdline-tools/latest/"
         rm -rf cmdline-tools commandlinetools-linux-9477386_latest.zip
         
         # Add to PATH
@@ -75,10 +75,10 @@ jobs:
         echo "$ANDROID_SDK_ROOT/platform-tools" >> $GITHUB_PATH
         
         # Accept licenses
-        yes | $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager --licenses
+        yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --licenses
         
         # Install required packages
-        $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager \
+        "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" \
           "platform-tools" \
           "platforms;android-33" \
           "build-tools;33.0.2" \
@@ -208,14 +208,6 @@ jobs:
         path: |
           build_logs/
           .buildozer/**/*.log
-        retention-days: 30
-
-    - name: Upload buildozer directory (debug)
-      if: failure()
-      uses: actions/upload-artifact@v4
-      with:
-        name: buildozer-debug
-        path: .buildozer
         retention-days: 30
 
     - name: Build failure summary
