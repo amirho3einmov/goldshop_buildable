@@ -24,7 +24,7 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Install system packages (rsync, unzip, wget etc.)
+      - name: Install system packages (rsync, wget, unzip, etc.)
         run: |
           sudo apt-get update -y
           sudo apt-get install -y git python3-pip python3-dev build-essential unzip zip wget \
@@ -63,38 +63,39 @@ jobs:
           rm -rf "$TMPDIR"
           rm -f "$ZIP"
 
-          # Make sdkmanager available in this shell and for later steps
+          # Make sdkmanager available for later steps (persist into PATH)
           echo "$SDK_ROOT/cmdline-tools/latest/bin" >> $GITHUB_PATH
+          echo "$SDK_ROOT/platform-tools" >> $GITHUB_PATH
+          echo "$SDK_ROOT/build-tools/33.0.2" >> $GITHUB_PATH
+
           export PATH="$SDK_ROOT/cmdline-tools/latest/bin:$PATH"
 
-          # Install the required SDK pieces non-interactively
+          # Install required SDK pieces non-interactively
           sdkmanager --sdk_root="$SDK_ROOT" "platform-tools" "platforms;android-33" "build-tools;33.0.2" "ndk;25.2.9519653"
 
-          # accept licenses
+          # Accept licenses
           yes | sdkmanager --sdk_root="$SDK_ROOT" --licenses || true
 
           # Persist environment variables for later steps
           echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> $GITHUB_ENV
           echo "ANDROID_HOME=$SDK_ROOT" >> $GITHUB_ENV
           echo "ANDROID_NDK_HOME=$SDK_ROOT/ndk/25.2.9519653" >> $GITHUB_ENV
+          echo "ANDROID_NDK_ROOT=$SDK_ROOT/ndk/25.2.9519653" >> $GITHUB_ENV
 
-          # Ensure build-tools/platform-tools are also available in PATH for later steps
-          echo "$SDK_ROOT/build-tools/33.0.2" >> $GITHUB_PATH
-          echo "$SDK_ROOT/platform-tools" >> $GITHUB_PATH
-
-          # Symlink aidl to /usr/local/bin so it's globally available as a command
+          # Symlink aidl to /usr/local/bin so it's resolvable as a command
           if [ -f "$SDK_ROOT/build-tools/33.0.2/aidl" ]; then
             sudo ln -sf "$SDK_ROOT/build-tools/33.0.2/aidl" /usr/local/bin/aidl
             sudo chmod +x "$SDK_ROOT/build-tools/33.0.2/aidl"
           fi
 
+          # Diagnostics (appear in logs)
           echo "=== SDK installed (diagnostics) ==="
           which sdkmanager || true
           sdkmanager --version || true
           which aidl || true
           ls -la "$SDK_ROOT/build-tools/33.0.2" | head -20 || true
 
-      - name: Set up Python virtual environment & install buildozer
+      - name: Set up Python venv & install buildozer
         run: |
           python3 -m venv buildozer-venv
           source buildozer-venv/bin/activate
@@ -112,7 +113,7 @@ jobs:
           mkdir -p "$HOME/.buildozer"
           mkdir -p "$WORKSPACE/.buildozer"
 
-          # write identical android_env.sh to both locations (use simple echo to avoid heredoc indent issues)
+          # write identical android_env.sh to both locations
           echo 'export ANDROID_SDK_ROOT="/usr/local/lib/android/sdk"' > "$HOME/.buildozer/android_env.sh"
           echo 'export ANDROID_NDK_HOME="/usr/local/lib/android/sdk/ndk/25.2.9519653"' >> "$HOME/.buildozer/android_env.sh"
           echo 'export ANDROID_HOME="/usr/local/lib/android/sdk"' >> "$HOME/.buildozer/android_env.sh"
@@ -124,7 +125,7 @@ jobs:
           cp -a "$HOME/.buildozer/android_env.sh" "$WORKSPACE/.buildozer/android_env.sh"
           chmod +x "$WORKSPACE/.buildozer/android_env.sh"
 
-          # also persist env vars (safe/duplicate)
+          # also persist envs (safe duplicate)
           echo "ANDROID_SDK_ROOT=/usr/local/lib/android/sdk" >> $GITHUB_ENV
           echo "ANDROID_NDK_HOME=/usr/local/lib/android/sdk/ndk/25.2.9519653" >> $GITHUB_ENV
           echo "ANDROID_HOME=/usr/local/lib/android/sdk" >> $GITHUB_ENV
@@ -139,23 +140,23 @@ jobs:
             exit 1
           fi
 
-      - name: Prepare buildozer directories & compatibility symlinks
+      - name: Prepare buildozer workspace layout & legacy symlinks
         env:
           WORKSPACE: ${{ github.workspace }}
           ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
         run: |
           set -e
-          # create workspace buildozer layout
+          # create workspace .buildozer layout
           mkdir -p "$WORKSPACE/.buildozer/android/platform/android-sdk"
 
-          # symlink SDK content into workspace .buildozer so buildozer finds platforms/build-tools/platform-tools
+          # Link SDK contents into workspace .buildozer (so buildozer can find platforms/build-tools/platform-tools)
           ln -sfn "$ANDROID_SDK_ROOT/"* "$WORKSPACE/.buildozer/android/platform/android-sdk/" || true
 
-          # ensure build-tools version link exists
+          # Ensure build-tools version link exists
           mkdir -p "$WORKSPACE/.buildozer/android/platform/android-sdk/build-tools"
           ln -sfn "$ANDROID_SDK_ROOT/build-tools/33.0.2" "$WORKSPACE/.buildozer/android/platform/android-sdk/build-tools/33.0.2" || true
 
-          # Create tools/bin (legacy path) and link sdkmanager & avdmanager there so buildozer expecting old layout works
+          # Create legacy tools/bin and link sdkmanager & avdmanager there (p4a/buildozer compatibility)
           mkdir -p "$WORKSPACE/.buildozer/android/platform/android-sdk/tools/bin"
           if [ -f "/usr/local/lib/android/sdk/cmdline-tools/latest/bin/sdkmanager" ]; then
             ln -sfn "/usr/local/lib/android/sdk/cmdline-tools/latest/bin/sdkmanager" \
@@ -166,17 +167,26 @@ jobs:
                    "$WORKSPACE/.buildozer/android/platform/android-sdk/tools/bin/avdmanager"
           fi
 
-          # Also link the full cmdline-tools latest bin files into workspace path (defensive)
+          # Also link the cmdline-tools bin files into the workspace path (defensive)
           mkdir -p "$WORKSPACE/.buildozer/android/platform/android-sdk/cmdline-tools/latest/bin"
           ln -sfn "/usr/local/lib/android/sdk/cmdline-tools/latest/bin/"* \
                  "$WORKSPACE/.buildozer/android/platform/android-sdk/cmdline-tools/latest/bin/" || true
 
           chmod -R a+rx "$WORKSPACE/.buildozer/android/platform/android-sdk" || true
 
+          # Create a workspace symlink for the NDK that buildozer expects (android-ndk-r25b)
+          INSTALLED_NDK="$ANDROID_SDK_ROOT/ndk/25.2.9519653"
+          TARGET_NDK_DIR="$WORKSPACE/.buildozer/android/platform/android-ndk-r25b"
+          mkdir -p "$(dirname "$TARGET_NDK_DIR")"
+          ln -sfn "$INSTALLED_NDK" "$TARGET_NDK_DIR" || true
+          echo "Linked NDK: $TARGET_NDK_DIR -> $(readlink -f $TARGET_NDK_DIR)" || true
+
           echo "=== workspace SDK snapshot ==="
           ls -la "$WORKSPACE/.buildozer/android/platform/android-sdk" | head -40 || true
           echo "=== legacy tools/bin ==="
           ls -la "$WORKSPACE/.buildozer/android/platform/android-sdk/tools/bin" || true
+          echo "=== NDK link ==="
+          ls -la "$TARGET_NDK_DIR" || true
 
       - name: Build APK (debug) using repo buildozer.spec
         env:
@@ -222,6 +232,38 @@ jobs:
           echo "=== Starting Buildozer build ==="
           # use the buildozer.spec already in repo (do not init/overwrite)
           buildozer --verbose android debug
+
+      - name: Save filtered logs (debug)
+        if: always()
+        run: |
+          mkdir -p build_logs
+          # collect likely p4a / buildozer logs under .buildozer
+          find . -path "./.buildozer/*" -type f -name "*.log" -o -name "*log*" -maxdepth 6 -print > /tmp/logfiles || true
+          cat /tmp/logfiles || true
+          for f in $(cat /tmp/logfiles 2>/dev/null); do
+            echo "==== FILE: $f ====" >> build_logs/combined.log
+            sed -n '1,4000p' "$f" >> build_logs/combined.log || true
+            echo "" >> build_logs/combined.log
+          done
+          if [ ! -s build_logs/combined.log ]; then
+            echo "No buildozer log files found; trying to save last 2000 lines of job summary (if present)." > build_logs/combined.log
+            [ -f "$GITHUB_STEP_SUMMARY" ] && tail -n 2000 "$GITHUB_STEP_SUMMARY" >> build_logs/combined.log || true
+          fi
+          grep -n -E "Traceback|ERROR|Exception|Command failed|Buildozer failed|Caused by|Killed|OutOfMemory|No such file or directory|Permission denied|ndk|aidl|sdkmanager" build_logs/combined.log > build_logs/filtered.log || true
+          first=$(grep -n "Traceback (most recent call last)" build_logs/combined.log | head -n1 | cut -d: -f1 || true)
+          if [ -n "$first" ]; then
+            start=$((first-20))
+            if [ $start -lt 1 ]; then start=1; fi
+            sed -n "${start},$((first+200))p" build_logs/combined.log > build_logs/traceback_chunk.log || true
+          fi
+          echo "Saved filtered logs to build_logs/"
+
+      - name: Upload filtered logs artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: filtered-logs
+          path: build_logs/
 
       - name: Upload APK artifact
         if: always()
