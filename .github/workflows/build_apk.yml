@@ -1,4 +1,4 @@
-name: Build APK (Fixed Virtual Environment)
+name: Build APK (Using Pre-installed Android SDK)
 
 on:
   push:
@@ -14,6 +14,12 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
 
+    - name: Setup Java
+      uses: actions/setup-java@v4
+      with:
+        distribution: 'temurin'
+        java-version: '17'
+
     - name: Install system dependencies
       run: |
         sudo apt-get update
@@ -22,7 +28,6 @@ jobs:
           build-essential \
           zip \
           unzip \
-          openjdk-17-jdk \
           autoconf \
           automake \
           libtool \
@@ -32,17 +37,12 @@ jobs:
           libncursesw5-dev \
           libtinfo6 \
           cmake \
-          curl \
-          wget \
           python3 \
           python3-pip \
           python3-venv
 
-    - name: Setup Java
-      uses: actions/setup-java@v4
-      with:
-        distribution: 'temurin'
-        java-version: '17'
+    - name: Setup Android SDK
+      uses: android-actions/setup-android@v3
 
     - name: Create and activate virtual environment
       run: |
@@ -51,116 +51,57 @@ jobs:
         echo "VIRTUAL_ENV=$PWD/buildozer-venv" >> $GITHUB_ENV
         echo "$PWD/buildozer-venv/bin" >> $GITHUB_PATH
 
-    - name: Install Python dependencies in virtual environment
+    - name: Install Buildozer
       run: |
         source buildozer-venv/bin/activate
         python -m pip install --upgrade pip
-        python -m pip install --upgrade \
-          buildozer \
-          Cython==0.29.33 \
-          virtualenv \
-          setuptools \
-          wheel
+        python -m pip install buildozer Cython
 
-    - name: Install Android SDK and NDK
+    - name: Verify Android SDK and AIDL
       run: |
-        # Create Android SDK directory
-        /usr/bin/mkdir -p "$HOME/android-sdk"
-        export ANDROID_SDK_ROOT="$HOME/android-sdk"
-        export ANDROID_HOME="$ANDROID_SDK_ROOT"
+        echo "=== Android SDK Info ==="
+        echo "ANDROID_SDK_ROOT: $ANDROID_SDK_ROOT"
+        echo "ANDROID_HOME: $ANDROID_HOME"
         
-        # Download and install Android Command Line Tools
-        cd "$HOME"
-        /usr/bin/curl -OL https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip
-        /usr/bin/unzip -q commandlinetools-linux-9477386_latest.zip
-        /usr/bin/mkdir -p "$ANDROID_SDK_ROOT/cmdline-tools/latest"
-        /usr/bin/mv cmdline-tools/* "$ANDROID_SDK_ROOT/cmdline-tools/latest/"
-        /usr/bin/rm -rf cmdline-tools commandlinetools-linux-9477386_latest.zip
+        echo "=== AIDL Check ==="
+        which aidl || echo "AIDL not found in PATH"
+        find $ANDROID_SDK_ROOT -name "aidl" -type f 2>/dev/null | head -5 || echo "No AIDL found in SDK"
+        
+        echo "=== Build Tools ==="
+        ls -la $ANDROID_SDK_ROOT/build-tools/ || echo "No build-tools directory"
+
+    - name: Install missing Android components
+      run: |
+        # Install specific build tools version that includes AIDL
+        $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager "build-tools;33.0.2"
+        
+        # Verify AIDL is now available
+        $ANDROID_SDK_ROOT/build-tools/33.0.2/aidl --version || echo "AIDL still not working"
         
         # Add to PATH
-        echo "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin" >> $GITHUB_PATH
-        echo "$ANDROID_SDK_ROOT/platform-tools" >> $GITHUB_PATH
-        
-        # Set environment variables
-        echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
-        echo "ANDROID_HOME=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
+        echo "$ANDROID_SDK_ROOT/build-tools/33.0.2" >> $GITHUB_PATH
 
-    - name: Install Android packages
+    - name: Build APK
       run: |
         source buildozer-venv/bin/activate
-        # Accept licenses
-        yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --licenses
+        mkdir -p build_logs
         
-        # Install required packages
-        "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" \
-          "platform-tools" \
-          "platforms;android-33" \
-          "build-tools;33.0.2" \
-          "ndk;25.2.9519653"
+        echo "=== Final AIDL Check ==="
+        which aidl
+        aidl --version || echo "AIDL version check failed"
         
-        echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/25.2.9519653" >> $GITHUB_ENV
-        echo "ANDROID_NDK_ROOT=$ANDROID_SDK_ROOT/ndk/25.2.9519653" >> $GITHUB_ENV
+        buildozer -v android debug 2>&1 | tee build_logs/build.log
 
-    - name: Create buildozer spec if missing
-      run: |
-        source buildozer-venv/bin/activate
-        if [ ! -f buildozer.spec ]; then
-          echo "Creating default buildozer.spec file..."
-          buildozer init
-        else
-          echo "buildozer.spec already exists"
-        fi
-
-    - name: Build APK with Buildozer
-      env:
-        ANDROID_SDK_ROOT: $HOME/android-sdk
-        ANDROID_HOME: $HOME/android-sdk
-        ANDROID_NDK_HOME: $HOME/android-sdk/ndk/25.2.9519653
-        ANDROID_NDK_ROOT: $HOME/android-sdk/ndk/25.2.9519653
-      run: |
-        source buildozer-venv/bin/activate
-        
-        # Create logs directory using absolute path
-        /usr/bin/mkdir -p build_logs
-        
-        echo "=== Starting Buildozer Build ==="
-        echo "Python version: $(python --version)"
-        echo "Buildozer version: $(buildozer --version 2>/dev/null || echo 'not available')"
-        echo "PATH: $PATH"
-        
-        # Build with timeout and logging
-        /usr/bin/timeout 45m buildozer -v android debug 2>&1 | /usr/bin/tee build_logs/buildozer_full.log
-        
-        BUILD_STATUS=${PIPESTATUS[0]}
-        
-        if [ $BUILD_STATUS -eq 124 ]; then
-          echo "Build timed out after 45 minutes"
-          /usr/bin/echo "TIMEOUT" > build_logs/build_status.txt
-        elif [ $BUILD_STATUS -ne 0 ]; then
-          echo "Build failed with exit code: $BUILD_STATUS"
-          /usr/bin/echo "FAILED:$BUILD_STATUS" > build_logs/build_status.txt
-        else
-          echo "Build completed successfully"
-          /usr/bin/echo "SUCCESS" > build_logs/build_status.txt
-        fi
-        
-        # Capture key error patterns
-        /usr/bin/grep -n -E "ERROR|Error|error|FAILED|Failed|failed|Exception|Traceback" build_logs/buildozer_full.log > build_logs/errors.log || true
-        
-        exit $BUILD_STATUS
-
-    - name: Upload APK artifact
+    - name: Upload APK
       if: success()
       uses: actions/upload-artifact@v4
       with:
-        name: android-apk
+        name: apk
         path: bin/*.apk
-        retention-days: 7
 
-    - name: Upload build logs
-      if: always()
+    - name: Upload logs
+      if: failure()
       uses: actions/upload-artifact@v4
       with:
-        name: build-logs
+        name: logs
         path: build_logs/
-        retention-days: 30
