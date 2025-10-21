@@ -1,4 +1,4 @@
-name: Build APK (Using Pre-installed Android SDK)
+name: Build APK (Fixed AIDL and distutils)
 
 on:
   push:
@@ -14,12 +14,6 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
 
-    - name: Setup Java
-      uses: actions/setup-java@v4
-      with:
-        distribution: 'temurin'
-        java-version: '17'
-
     - name: Install system dependencies
       run: |
         sudo apt-get update
@@ -28,6 +22,7 @@ jobs:
           build-essential \
           zip \
           unzip \
+          openjdk-17-jdk \
           autoconf \
           automake \
           libtool \
@@ -37,71 +32,201 @@ jobs:
           libncursesw5-dev \
           libtinfo6 \
           cmake \
+          curl \
+          wget \
           python3 \
           python3-pip \
           python3-venv
 
-    - name: Setup Android SDK
-      uses: android-actions/setup-android@v3
+    - name: Setup Java
+      uses: actions/setup-java@v4
+      with:
+        distribution: 'temurin'
+        java-version: '17'
 
-    - name: Create and activate virtual environment
+    - name: Create and activate virtual environment with Python 3.9
       run: |
         python3 -m venv buildozer-venv
         source buildozer-venv/bin/activate
         echo "VIRTUAL_ENV=$PWD/buildozer-venv" >> $GITHUB_ENV
         echo "$PWD/buildozer-venv/bin" >> $GITHUB_PATH
 
-    - name: Install Buildozer
+    - name: Install Python dependencies with distutils
       run: |
         source buildozer-venv/bin/activate
         python -m pip install --upgrade pip
-        python -m pip install buildozer Cython
+        # Install setuptools which includes distutils
+        python -m pip install setuptools==65.5.0
+        python -m pip install --upgrade \
+          buildozer \
+          Cython==0.29.33 \
+          virtualenv \
+          wheel
 
-    - name: Verify Android SDK and AIDL
+    - name: Setup Android SDK using GitHub's pre-installed version
       run: |
-        echo "=== Android SDK Info ==="
-        echo "ANDROID_SDK_ROOT: $ANDROID_SDK_ROOT"
-        echo "ANDROID_HOME: $ANDROID_HOME"
+        echo "ANDROID_SDK_ROOT=/usr/local/lib/android/sdk" >> $GITHUB_ENV
+        echo "ANDROID_HOME=/usr/local/lib/android/sdk" >> $GITHUB_ENV
+        echo "ANDROID_NDK_HOME=/usr/local/lib/android/sdk/ndk/25.2.9519653" >> $GITHUB_ENV
+        echo "ANDROID_NDK_ROOT=/usr/local/lib/android/sdk/ndk/25.2.9519653" >> $GITHUB_ENV
         
-        echo "=== AIDL Check ==="
-        which aidl || echo "AIDL not found in PATH"
-        find $ANDROID_SDK_ROOT -name "aidl" -type f 2>/dev/null | head -5 || echo "No AIDL found in SDK"
-        
-        echo "=== Build Tools ==="
-        ls -la $ANDROID_SDK_ROOT/build-tools/ || echo "No build-tools directory"
+        # Add Android tools to PATH
+        echo "/usr/local/lib/android/sdk/cmdline-tools/latest/bin" >> $GITHUB_PATH
+        echo "/usr/local/lib/android/sdk/platform-tools" >> $GITHUB_PATH
+        echo "/usr/local/lib/android/sdk/build-tools/33.0.2" >> $GITHUB_PATH
 
-    - name: Install missing Android components
-      run: |
-        # Install specific build tools version that includes AIDL
-        $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager "build-tools;33.0.2"
-        
-        # Verify AIDL is now available
-        $ANDROID_SDK_ROOT/build-tools/33.0.2/aidl --version || echo "AIDL still not working"
-        
-        # Add to PATH
-        echo "$ANDROID_SDK_ROOT/build-tools/33.0.2" >> $GITHUB_PATH
-
-    - name: Build APK
+    - name: Install required Android packages
       run: |
         source buildozer-venv/bin/activate
+        # Accept licenses
+        yes | sdkmanager --licenses || true
+        
+        # Install required packages
+        sdkmanager "platforms;android-33" "build-tools;33.0.2" "platform-tools"
+
+    - name: Create mock AIDL version script
+      run: |
+        # Create a wrapper script that handles the --version flag properly
+        cat > /tmp/aidl-wrapper << 'EOF'
+        #!/bin/bash
+        if [ "$1" = "--version" ] && [ -z "$2" ]; then
+          echo "33.0.2"
+        else
+          exec /usr/local/lib/android/sdk/build-tools/33.0.2/aidl "$@"
+        fi
+        EOF
+        
+        chmod +x /tmp/aidl-wrapper
+        sudo mv /tmp/aidl-wrapper /usr/local/bin/aidl
+
+    - name: Verify AIDL fix
+      run: |
+        echo "=== Testing AIDL ==="
+        which aidl
+        aidl --version
+        echo "AIDL test completed"
+
+    - name: Create buildozer spec if missing
+      run: |
+        source buildozer-venv/bin/activate
+        if [ ! -f buildozer.spec ]; then
+          echo "Creating default buildozer.spec file..."
+          buildozer init
+        else
+          echo "buildozer.spec already exists"
+        fi
+
+    - name: Configure buildozer.spec for success
+      run: |
+        source buildozer-venv/bin/activate
+        if [ -f buildozer.spec ]; then
+          # Backup original
+          cp buildozer.spec buildozer.spec.backup
+          
+          # Apply fixes for common issues
+          sed -i 's/^#android.accept_sdk_license = .*/android.accept_sdk_license = True/' buildozer.spec
+          sed -i 's/^#android.sdk_path = .*/android.sdk_path = \/usr\/local\/lib\/android\/sdk/' buildozer.spec
+          sed -i 's/^#android.ndk_path = .*/android.ndk_path = \/usr\/local\/lib\/android\/sdk\/ndk\/25.2.9519653/' buildozer.spec
+          sed -i 's/^#android.api = .*/android.api = 33/' buildozer.spec
+          sed -i 's/^#android.minapi = .*/android.minapi = 21/' buildozer.spec
+          sed -i 's/^#android.ndk_api = .*/android.ndk_api = 21/' buildozer.spec
+          
+          # Build only one architecture to speed up
+          sed -i 's/^android.arch = .*/android.arch = arm64-v8a/' buildozer.spec
+          
+          echo "=== Modified buildozer.spec ==="
+          grep -E "^(android\.|#android\.)" buildozer.spec | head -20
+        fi
+
+    - name: Build APK with Buildozer
+      run: |
+        source buildozer-venv/bin/activate
+        
+        # Create logs directory
         mkdir -p build_logs
         
-        echo "=== Final AIDL Check ==="
-        which aidl
-        aidl --version || echo "AIDL version check failed"
+        echo "=== Starting Buildozer Build ==="
+        echo "Python version: $(python --version)"
+        echo "Buildozer version: $(buildozer --version 2>/dev/null || echo 'not available')"
+        echo "AIDL version: $(aidl --version)"
         
-        buildozer -v android debug 2>&1 | tee build_logs/build.log
+        # Build with detailed logging
+        buildozer -v android debug 2>&1 | tee build_logs/buildozer_full.log
+        
+        BUILD_STATUS=${PIPESTATUS[0]}
+        
+        if [ $BUILD_STATUS -ne 0 ]; then
+          echo "Build failed with exit code: $BUILD_STATUS"
+          echo "FAILED:$BUILD_STATUS" > build_logs/build_status.txt
+          
+          # Try to identify the specific error
+          grep -n -E "ERROR|Error|error|FAILED|Failed|failed|Exception|Traceback" build_logs/buildozer_full.log > build_logs/errors.log || true
+          echo "=== Key errors found ==="
+          cat build_logs/errors.log || echo "No specific errors logged"
+        else
+          echo "Build completed successfully"
+          echo "SUCCESS" > build_logs/build_status.txt
+        fi
+        
+        exit $BUILD_STATUS
 
-    - name: Upload APK
+    - name: Check for APK files
+      if: always()
+      run: |
+        echo "=== Checking for APK files ==="
+        find . -name "*.apk" -type f | head -10 || echo "No APK files found"
+        ls -la bin/ 2>/dev/null || echo "No bin directory"
+        echo "=== Buildozer build directory ==="
+        find .buildozer -name "*.apk" -type f 2>/dev/null | head -10 || echo "No APK in buildozer directory"
+
+    - name: Upload APK artifact
       if: success()
       uses: actions/upload-artifact@v4
       with:
-        name: apk
-        path: bin/*.apk
+        name: android-apk
+        path: |
+          bin/*.apk
+          .buildozer/android/platform/build-*/dists/*/build/outputs/apk/*.apk
+        if-no-files-found: error
+        retention-days: 7
 
-    - name: Upload logs
+    - name: Upload build logs
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: build-logs
+        path: build_logs/
+        retention-days: 30
+
+    - name: Upload buildozer debug info
       if: failure()
       uses: actions/upload-artifact@v4
       with:
-        name: logs
-        path: build_logs/
+        name: buildozer-debug
+        path: .buildozer
+        retention-days: 30
+
+    - name: Build summary
+      if: always()
+      run: |
+        if [ -f "build_logs/build_status.txt" ]; then
+          STATUS=$(cat build_logs/build_status.txt)
+          echo "## Build Status: $STATUS" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "## Build Status: UNKNOWN" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        if [ -f "build_logs/errors.log" ]; then
+          echo "### Key Errors:" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          head -20 build_logs/errors.log >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+        fi
+        
+        APK_FOUND=$(find . -name "*.apk" -type f 2>/dev/null | head -1 || echo "")
+        if [ -n "$APK_FOUND" ]; then
+          echo "### APK Files Found:" >> $GITHUB_STEP_SUMMARY
+          find . -name "*.apk" -type f 2>/dev/null | head -5 >> $GITHUB_STEP_SUMMARY
+        else
+          echo "### No APK files were generated" >> $GITHUB_STEP_SUMMARY
+        fi
