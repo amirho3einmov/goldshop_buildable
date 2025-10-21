@@ -24,39 +24,40 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Install system packages
+      - name: Install system packages (incl. rsync)
         run: |
           sudo apt-get update -y
           sudo apt-get install -y git python3-pip python3-dev build-essential unzip zip \
             libncurses-dev libtinfo-dev libssl-dev libffi-dev liblzma-dev libbz2-dev zlib1g-dev \
             autoconf automake libtool pkg-config curl ca-certificates rsync
 
-      - name: Install Android SDK and NDK
+      - name: Install Android SDK commandline-tools, platform-tools, build-tools and NDK
         env:
           ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
         run: |
           set -e
 
-          # Prepare SDK dir
+          # create SDK dir and give ownership to runner user
           sudo mkdir -p "$ANDROID_SDK_ROOT"
           sudo chown -R $USER:$USER "$ANDROID_SDK_ROOT"
 
-          # Download command line tools
+          # download command line tools zip
           cd /tmp
           wget -q https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip
 
-          # Extract to a temp dir and rsync into place (avoids "Directory not empty" errors)
+          # extract into temp dir to avoid overwriting existing contents
           TMPDIR=$(mktemp -d)
           unzip -q commandlinetools-linux-9477386_latest.zip -d "$TMPDIR"
           mkdir -p "$ANDROID_SDK_ROOT/cmdline-tools/latest"
 
+          # normalize layout: some zips contain cmdline-tools/* top-level
           if [ -d "$TMPDIR/cmdline-tools" ]; then
             SRC_DIR="$TMPDIR/cmdline-tools"
           else
             SRC_DIR="$TMPDIR"
           fi
 
-          # Use rsync (preferred) or cp as fallback
+          # use rsync (preferred) to merge into place (avoids "Directory not empty" mv errors)
           if command -v rsync >/dev/null 2>&1; then
             rsync -a "$SRC_DIR/" "$ANDROID_SDK_ROOT/cmdline-tools/latest/"
           else
@@ -67,32 +68,32 @@ jobs:
           rm -rf "$TMPDIR"
           rm -f commandlinetools-linux-9477386_latest.zip
 
-          # Make sdkmanager available in this shell
+          # make sdkmanager available in current shell
           export PATH="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$PATH"
 
-          # Install required SDK components (platform-tools, platform, build-tools, NDK)
+          # install platform-tools, platform, build-tools and NDK non-interactively
           sdkmanager --sdk_root="$ANDROID_SDK_ROOT" "platform-tools" "platforms;android-33" "build-tools;33.0.2" "ndk;25.2.9519653"
 
-          # Accept licenses non-interactively
+          # accept licenses
           yes | sdkmanager --sdk_root="$ANDROID_SDK_ROOT" --licenses || true
 
-          # Persist env vars for subsequent steps
+          # persist variables for next steps
           echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
           echo "ANDROID_HOME=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
           echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/25.2.9519653" >> $GITHUB_ENV
 
-          # Ensure build-tools and platform-tools are available in PATH for next steps
+          # ensure build-tools/platform-tools/cmdline-tools are on PATH for later steps
           echo "$ANDROID_SDK_ROOT/build-tools/33.0.2" >> $GITHUB_PATH
           echo "$ANDROID_SDK_ROOT/platform-tools" >> $GITHUB_PATH
           echo "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin" >> $GITHUB_PATH
 
-          # Symlink aidl into /usr/local/bin so it's resolvable as a command
+          # symlink aidl into /usr/local/bin so it's resolvable as 'aidl'
           if [ -f "$ANDROID_SDK_ROOT/build-tools/33.0.2/aidl" ]; then
             sudo ln -sf "$ANDROID_SDK_ROOT/build-tools/33.0.2/aidl" /usr/local/bin/aidl
             sudo chmod +x "$ANDROID_SDK_ROOT/build-tools/33.0.2/aidl"
           fi
 
-          # Diagnostics
+          # diagnostics
           echo "=== AIDL check ==="
           which aidl || true
           ls -la "$ANDROID_SDK_ROOT/build-tools/33.0.2/" | head -20
@@ -115,13 +116,14 @@ jobs:
 
       - name: Configure buildozer environment
         run: |
+          # Persist SDK/NDK paths again (redundant safe write)
           echo "ANDROID_SDK_ROOT=/usr/local/lib/android/sdk" >> $GITHUB_ENV
           echo "ANDROID_NDK_HOME=/usr/local/lib/android/sdk/ndk/25.2.9519653" >> $GITHUB_ENV
           echo "ANDROID_HOME=/usr/local/lib/android/sdk" >> $GITHUB_ENV
 
           mkdir -p $HOME/.buildozer
 
-          # Create android_env.sh using echo (avoids heredoc indentation issues)
+          # create android_env.sh via echo lines (no problematic heredoc indentation)
           echo 'export ANDROID_SDK_ROOT="/usr/local/lib/android/sdk"' > $HOME/.buildozer/android_env.sh
           echo 'export ANDROID_NDK_HOME="/usr/local/lib/android/sdk/ndk/25.2.9519653"' >> $HOME/.buildozer/android_env.sh
           echo 'export ANDROID_HOME="/usr/local/lib/android/sdk"' >> $HOME/.buildozer/android_env.sh
@@ -130,13 +132,12 @@ jobs:
           echo 'export PATH="/usr/local/lib/android/sdk/cmdline-tools/latest/bin:$PATH"' >> $HOME/.buildozer/android_env.sh
           chmod +x $HOME/.buildozer/android_env.sh
 
-      - name: Create proper buildozer.spec
+      - name: Create buildozer.spec (safe, no indented heredoc)
         run: |
           if [ ! -f buildozer.spec ]; then
             buildozer init
           fi
 
-          # Create buildozer.spec via echo lines to avoid heredoc issues
           cat > buildozer.spec <<'SPEC'
 [app]
 title = MyApp
@@ -156,7 +157,6 @@ log_level = 2
 warn_on_root = 1
 
 [app:android]
-# Use system Android SDK
 android.sdk_path = /usr/local/lib/android/sdk
 android.ndk_path = /usr/local/lib/android/sdk/ndk/25.2.9519653
 android.ndk_version = 25b
@@ -167,21 +167,17 @@ android.accept_sdk_license = True
 android.allow_backup = True
 android.fast_async = True
 
-# Python-for-Android settings
 p4a.branch = develop
 p4a.options = --dir=./
 
-# Permissions
 android.permissions = INTERNET,WRITE_EXTERNAL_STORAGE,READ_EXTERNAL_STORAGE
-
-# Archs
 android.arch = arm64-v8a, armeabi-v7a
 SPEC
 
           echo "=== Final buildozer.spec ==="
           cat buildozer.spec
 
-      - name: Prepare buildozer directories
+      - name: Prepare buildozer directories (symlink SDK where buildozer expects)
         run: |
           export HOME="${GITHUB_WORKSPACE}"
           mkdir -p "$HOME/.buildozer"
