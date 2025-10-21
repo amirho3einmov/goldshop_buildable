@@ -63,7 +63,7 @@ jobs:
           rm -rf "$TMPDIR"
           rm -f "$ZIP"
 
-          # Make sdkmanager available for later steps (persist into PATH)
+          # Make sdkmanager and other tools available via PATH for later steps
           echo "$SDK_ROOT/cmdline-tools/latest/bin" >> $GITHUB_PATH
           echo "$SDK_ROOT/platform-tools" >> $GITHUB_PATH
           echo "$SDK_ROOT/build-tools/33.0.2" >> $GITHUB_PATH
@@ -88,7 +88,7 @@ jobs:
             sudo chmod +x "$SDK_ROOT/build-tools/33.0.2/aidl"
           fi
 
-          # Diagnostics (appear in logs)
+          # Diagnostics
           echo "=== SDK installed (diagnostics) ==="
           which sdkmanager || true
           sdkmanager --version || true
@@ -109,11 +109,9 @@ jobs:
         env:
           WORKSPACE: ${{ github.workspace }}
         run: |
-          # ensure both dirs exist
           mkdir -p "$HOME/.buildozer"
           mkdir -p "$WORKSPACE/.buildozer"
 
-          # write identical android_env.sh to both locations
           echo 'export ANDROID_SDK_ROOT="/usr/local/lib/android/sdk"' > "$HOME/.buildozer/android_env.sh"
           echo 'export ANDROID_NDK_HOME="/usr/local/lib/android/sdk/ndk/25.2.9519653"' >> "$HOME/.buildozer/android_env.sh"
           echo 'export ANDROID_HOME="/usr/local/lib/android/sdk"' >> "$HOME/.buildozer/android_env.sh"
@@ -125,7 +123,6 @@ jobs:
           cp -a "$HOME/.buildozer/android_env.sh" "$WORKSPACE/.buildozer/android_env.sh"
           chmod +x "$WORKSPACE/.buildozer/android_env.sh"
 
-          # also persist envs (safe duplicate)
           echo "ANDROID_SDK_ROOT=/usr/local/lib/android/sdk" >> $GITHUB_ENV
           echo "ANDROID_NDK_HOME=/usr/local/lib/android/sdk/ndk/25.2.9519653" >> $GITHUB_ENV
           echo "ANDROID_HOME=/usr/local/lib/android/sdk" >> $GITHUB_ENV
@@ -146,17 +143,16 @@ jobs:
           ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
         run: |
           set -e
-          # create workspace .buildozer layout
           mkdir -p "$WORKSPACE/.buildozer/android/platform/android-sdk"
 
-          # Link SDK contents into workspace .buildozer (so buildozer can find platforms/build-tools/platform-tools)
+          # symlink SDK content into workspace .buildozer
           ln -sfn "$ANDROID_SDK_ROOT/"* "$WORKSPACE/.buildozer/android/platform/android-sdk/" || true
 
-          # Ensure build-tools version link exists
+          # ensure build-tools version link exists
           mkdir -p "$WORKSPACE/.buildozer/android/platform/android-sdk/build-tools"
           ln -sfn "$ANDROID_SDK_ROOT/build-tools/33.0.2" "$WORKSPACE/.buildozer/android/platform/android-sdk/build-tools/33.0.2" || true
 
-          # Create legacy tools/bin and link sdkmanager & avdmanager there (p4a/buildozer compatibility)
+          # Create legacy tools/bin and link sdkmanager & avdmanager there
           mkdir -p "$WORKSPACE/.buildozer/android/platform/android-sdk/tools/bin"
           if [ -f "/usr/local/lib/android/sdk/cmdline-tools/latest/bin/sdkmanager" ]; then
             ln -sfn "/usr/local/lib/android/sdk/cmdline-tools/latest/bin/sdkmanager" \
@@ -167,7 +163,7 @@ jobs:
                    "$WORKSPACE/.buildozer/android/platform/android-sdk/tools/bin/avdmanager"
           fi
 
-          # Also link the cmdline-tools bin files into the workspace path (defensive)
+          # link cmdline-tools bin files defensively
           mkdir -p "$WORKSPACE/.buildozer/android/platform/android-sdk/cmdline-tools/latest/bin"
           ln -sfn "/usr/local/lib/android/sdk/cmdline-tools/latest/bin/"* \
                  "$WORKSPACE/.buildozer/android/platform/android-sdk/cmdline-tools/latest/bin/" || true
@@ -188,7 +184,7 @@ jobs:
           echo "=== NDK link ==="
           ls -la "$TARGET_NDK_DIR" || true
 
-      - name: Build APK (debug) using repo buildozer.spec
+      - name: Build APK (debug) and capture full logs
         env:
           WORKSPACE: ${{ github.workspace }}
           ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
@@ -196,50 +192,53 @@ jobs:
           ANDROID_NDK_HOME: /usr/local/lib/android/sdk/ndk/25.2.9519653
           HOME: ${{ github.workspace }}
         run: |
-          set -e
+          set -euo pipefail
+          mkdir -p build_logs
           source buildozer-venv/bin/activate
 
-          # Source android_env from workspace first (where buildozer expects), else fallback to HOME
+          # source android_env from workspace first (where buildozer expects), else from HOME
           if [ -f "$WORKSPACE/.buildozer/android_env.sh" ]; then
-            echo "Sourcing android_env from workspace"
             source "$WORKSPACE/.buildozer/android_env.sh"
           elif [ -f "$HOME/.buildozer/android_env.sh" ]; then
-            echo "Sourcing android_env from HOME"
             source "$HOME/.buildozer/android_env.sh"
-          else
-            echo "Error: android_env.sh not found in workspace or HOME"
-            exit 1
           fi
 
-          echo "=== Env check before build ==="
-          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
-          echo "ANDROID_HOME=$ANDROID_HOME"
-          echo "ANDROID_NDK_HOME=$ANDROID_NDK_HOME"
-          echo "PATH=$PATH"
+          echo "=== Env check before build ===" | tee build_logs/buildozer_full.log
+          env | grep -E 'ANDROID|NDK|SDK' | tee -a build_logs/buildozer_full.log
 
-          echo "=== Tools diagnostics ==="
-          echo "Which sdkmanager:"
-          which sdkmanager || true
-          sdkmanager --version || true
-          echo "Which aidl:"
-          which aidl || true
+          echo "=== Tools diagnostics ===" | tee -a build_logs/buildozer_full.log
+          which sdkmanager || true | tee -a build_logs/buildozer_full.log
+          sdkmanager --version 2>&1 | tee -a build_logs/buildozer_full.log || true
+          which aidl || true | tee -a build_logs/buildozer_full.log
           if [ -f "/usr/local/lib/android/sdk/build-tools/33.0.2/aidl" ]; then
-            /usr/local/lib/android/sdk/build-tools/33.0.2/aidl --version || true
+            /usr/local/lib/android/sdk/build-tools/33.0.2/aidl --version 2>&1 | tee -a build_logs/buildozer_full.log || true
           fi
-          echo "List legacy tools/bin (workspace):"
-          ls -la "$WORKSPACE/.buildozer/android/platform/android-sdk/tools/bin" || true
 
-          echo "=== Starting Buildozer build ==="
-          # use the buildozer.spec already in repo (do not init/overwrite)
-          buildozer --verbose android debug
+          echo "=== Starting Buildozer (this can be long) ===" | tee -a build_logs/buildozer_full.log
+          set +e
+          buildozer --verbose android debug 2>&1 | tee -a build_logs/buildozer_full.log
+          RC=${PIPESTATUS[0]}
+          set -e
+
+          echo "Buildozer exit code: $RC" | tee -a build_logs/buildozer_full.log
+
+          # Extract first Traceback chunk and high-priority patterns
+          grep -n "Traceback (most recent call last)" build_logs/buildozer_full.log | head -n1 | cut -d: -f1 > /tmp/first_trace || true
+          if [ -s /tmp/first_trace ]; then
+            FIRST_LINE=$(cat /tmp/first_trace)
+            START=$(( FIRST_LINE > 30 ? FIRST_LINE-30 : 1 ))
+            sed -n "${START},$((FIRST_LINE+300))p" build_logs/buildozer_full.log > build_logs/traceback_chunk.log || true
+          fi
+          grep -n -E "Traceback|ERROR|Exception|Command failed|Buildozer failed|Caused by|Killed|OutOfMemory|No such file or directory|Permission denied|ndk|aidl|sdkmanager|clang|gcc|error" build_logs/buildozer_full.log > build_logs/filtered.log || true
+
+          # exit with buildozer exit code so workflow step fails if build failed
+          exit $RC
 
       - name: Save filtered logs (debug)
         if: always()
         run: |
           mkdir -p build_logs
-          # collect likely p4a / buildozer logs under .buildozer
           find . -path "./.buildozer/*" -type f -name "*.log" -o -name "*log*" -maxdepth 6 -print > /tmp/logfiles || true
-          cat /tmp/logfiles || true
           for f in $(cat /tmp/logfiles 2>/dev/null); do
             echo "==== FILE: $f ====" >> build_logs/combined.log
             sed -n '1,4000p' "$f" >> build_logs/combined.log || true
@@ -262,7 +261,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: filtered-logs
+          name: buildozer-logs
           path: build_logs/
 
       - name: Upload APK artifact
