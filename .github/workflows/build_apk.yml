@@ -100,19 +100,32 @@ jobs:
           python3 -m pip install --upgrade buildozer
           buildozer --version
 
-      - name: Configure buildozer environment (create android_env.sh)
+      - name: Configure buildozer environment (write android_env.sh into both HOME and workspace)
+        env:
+          # GITHUB_WORKSPACE is provided by GitHub Actions automatically
+          WORKSPACE: ${{ github.workspace }}
         run: |
+          # ensure both locations exist and write the same android_env.sh to both
+          mkdir -p "$HOME/.buildozer"
+          mkdir -p "$WORKSPACE/.buildozer"
+
+          # file content
+          echo 'export ANDROID_SDK_ROOT="/usr/local/lib/android/sdk"' > "$HOME/.buildozer/android_env.sh"
+          echo 'export ANDROID_NDK_HOME="/usr/local/lib/android/sdk/ndk/25.2.9519653"' >> "$HOME/.buildozer/android_env.sh"
+          echo 'export ANDROID_HOME="/usr/local/lib/android/sdk"' >> "$HOME/.buildozer/android_env.sh"
+          echo 'export PATH="/usr/local/lib/android/sdk/build-tools/33.0.2:$PATH"' >> "$HOME/.buildozer/android_env.sh"
+          echo 'export PATH="/usr/local/lib/android/sdk/platform-tools:$PATH"' >> "$HOME/.buildozer/android_env.sh"
+          echo 'export PATH="/usr/local/lib/android/sdk/cmdline-tools/latest/bin:$PATH"' >> "$HOME/.buildozer/android_env.sh"
+          chmod +x "$HOME/.buildozer/android_env.sh"
+
+          # duplicate into workspace location (so sourcing WORKSPACE/.buildozer/android_env.sh works)
+          cp -a "$HOME/.buildozer/android_env.sh" "$WORKSPACE/.buildozer/android_env.sh"
+          chmod +x "$WORKSPACE/.buildozer/android_env.sh"
+
+          # also persist envs for later steps
           echo "ANDROID_SDK_ROOT=/usr/local/lib/android/sdk" >> $GITHUB_ENV
           echo "ANDROID_NDK_HOME=/usr/local/lib/android/sdk/ndk/25.2.9519653" >> $GITHUB_ENV
           echo "ANDROID_HOME=/usr/local/lib/android/sdk" >> $GITHUB_ENV
-          mkdir -p $HOME/.buildozer
-          echo 'export ANDROID_SDK_ROOT="/usr/local/lib/android/sdk"' > $HOME/.buildozer/android_env.sh
-          echo 'export ANDROID_NDK_HOME="/usr/local/lib/android/sdk/ndk/25.2.9519653"' >> $HOME/.buildozer/android_env.sh
-          echo 'export ANDROID_HOME="/usr/local/lib/android/sdk"' >> $HOME/.buildozer/android_env.sh
-          echo 'export PATH="/usr/local/lib/android/sdk/build-tools/33.0.2:$PATH"' >> $HOME/.buildozer/android_env.sh
-          echo 'export PATH="/usr/local/lib/android/sdk/platform-tools:$PATH"' >> $HOME/.buildozer/android_env.sh
-          echo 'export PATH="/usr/local/lib/android/sdk/cmdline-tools/latest/bin:$PATH"' >> $HOME/.buildozer/android_env.sh
-          chmod +x $HOME/.buildozer/android_env.sh
 
       - name: Show existing buildozer.spec (we will use repo file, not overwrite)
         run: |
@@ -125,14 +138,15 @@ jobs:
           fi
 
       - name: Prepare buildozer directories (symlink SDK where buildozer expects)
+        env:
+          WORKSPACE: ${{ github.workspace }}
         run: |
-          export HOME="${GITHUB_WORKSPACE}"
-          mkdir -p "$HOME/.buildozer"
-          mkdir -p "$HOME/.buildozer/android/platform"
-          mkdir -p "$HOME/.buildozer/android/platform/android-sdk"
-          ln -sf /usr/local/lib/android/sdk/* "$HOME/.buildozer/android/platform/android-sdk/" || true
-          mkdir -p "$HOME/.buildozer/android/platform/android-sdk/build-tools"
-          ln -sf /usr/local/lib/android/sdk/build-tools/33.0.2 "$HOME/.buildozer/android/platform/android-sdk/build-tools/33.0.2" || true
+          mkdir -p "$WORKSPACE/.buildozer"
+          mkdir -p "$WORKSPACE/.buildozer/android/platform"
+          mkdir -p "$WORKSPACE/.buildozer/android/platform/android-sdk"
+          ln -sf /usr/local/lib/android/sdk/* "$WORKSPACE/.buildozer/android/platform/android-sdk/" || true
+          mkdir -p "$WORKSPACE/.buildozer/android/platform/android-sdk/build-tools"
+          ln -sf /usr/local/lib/android/sdk/build-tools/33.0.2 "$WORKSPACE/.buildozer/android/platform/android-sdk/build-tools/33.0.2" || true
 
       - name: Build APK (debug) using repo buildozer.spec
         env:
@@ -140,9 +154,22 @@ jobs:
           ANDROID_HOME: /usr/local/lib/android/sdk
           ANDROID_NDK_HOME: /usr/local/lib/android/sdk/ndk/25.2.9519653
           HOME: ${{ github.workspace }}
+          WORKSPACE: ${{ github.workspace }}
         run: |
           source buildozer-venv/bin/activate
-          source $HOME/.buildozer/android_env.sh
+
+          # Try to source the android_env from workspace, otherwise from HOME (runner)
+          if [ -f "$WORKSPACE/.buildozer/android_env.sh" ]; then
+            echo "sourcing from workspace: $WORKSPACE/.buildozer/android_env.sh"
+            source "$WORKSPACE/.buildozer/android_env.sh"
+          elif [ -f "$HOME/.buildozer/android_env.sh" ]; then
+            echo "sourcing from home: $HOME/.buildozer/android_env.sh"
+            source "$HOME/.buildozer/android_env.sh"
+          else
+            echo "Error: android_env.sh not found in workspace or HOME"
+            ls -la "$WORKSPACE" || true
+            exit 1
+          fi
 
           echo "=== Environment Verification ==="
           echo "ANDROID_SDK_ROOT: $ANDROID_SDK_ROOT"
@@ -162,7 +189,6 @@ jobs:
           fi
 
           echo "=== Starting Buildozer ==="
-          # use the buildozer.spec already in repo (do not init or overwrite)
           buildozer --verbose android debug
 
       - name: Upload APK artifact
