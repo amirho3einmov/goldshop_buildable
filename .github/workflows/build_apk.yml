@@ -1,32 +1,18 @@
-name: Build APK (Optimized & Robust)
+name: Build APK (Fixed Virtual Environment)
 
 on:
   push:
     branches: [ main, master ]
-  pull_request:
-    branches: [ main, master ]
   workflow_dispatch:
-
-permissions:
-  contents: read
 
 jobs:
   build-apk:
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
-    strategy:
-      matrix:
-        python-version: [3.9]
-
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
-
-    - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v4
-      with:
-        python-version: ${{ matrix.python-version }}
 
     - name: Install system dependencies
       run: |
@@ -47,7 +33,10 @@ jobs:
           libtinfo6 \
           cmake \
           curl \
-          wget
+          wget \
+          python3 \
+          python3-pip \
+          python3-venv
 
     - name: Setup Java
       uses: actions/setup-java@v4
@@ -55,25 +44,50 @@ jobs:
         distribution: 'temurin'
         java-version: '17'
 
+    - name: Create and activate virtual environment
+      run: |
+        python3 -m venv buildozer-venv
+        source buildozer-venv/bin/activate
+        echo "VIRTUAL_ENV=$PWD/buildozer-venv" >> $GITHUB_ENV
+        echo "$PWD/buildozer-venv/bin" >> $GITHUB_PATH
+
+    - name: Install Python dependencies in virtual environment
+      run: |
+        source buildozer-venv/bin/activate
+        python -m pip install --upgrade pip
+        python -m pip install --upgrade \
+          buildozer \
+          Cython==0.29.33 \
+          virtualenv \
+          setuptools \
+          wheel
+
     - name: Install Android SDK and NDK
       run: |
         # Create Android SDK directory
-        mkdir -p "$HOME/android-sdk"
+        /usr/bin/mkdir -p "$HOME/android-sdk"
         export ANDROID_SDK_ROOT="$HOME/android-sdk"
         export ANDROID_HOME="$ANDROID_SDK_ROOT"
         
         # Download and install Android Command Line Tools
         cd "$HOME"
-        wget -q https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip
-        unzip -q commandlinetools-linux-9477386_latest.zip
-        mkdir -p "$ANDROID_SDK_ROOT/cmdline-tools/latest"
-        mv cmdline-tools/* "$ANDROID_SDK_ROOT/cmdline-tools/latest/"
-        rm -rf cmdline-tools commandlinetools-linux-9477386_latest.zip
+        /usr/bin/curl -OL https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip
+        /usr/bin/unzip -q commandlinetools-linux-9477386_latest.zip
+        /usr/bin/mkdir -p "$ANDROID_SDK_ROOT/cmdline-tools/latest"
+        /usr/bin/mv cmdline-tools/* "$ANDROID_SDK_ROOT/cmdline-tools/latest/"
+        /usr/bin/rm -rf cmdline-tools commandlinetools-linux-9477386_latest.zip
         
         # Add to PATH
         echo "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin" >> $GITHUB_PATH
         echo "$ANDROID_SDK_ROOT/platform-tools" >> $GITHUB_PATH
         
+        # Set environment variables
+        echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
+        echo "ANDROID_HOME=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
+
+    - name: Install Android packages
+      run: |
+        source buildozer-venv/bin/activate
         # Accept licenses
         yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --licenses
         
@@ -84,62 +98,18 @@ jobs:
           "build-tools;33.0.2" \
           "ndk;25.2.9519653"
         
-        # Set environment variables
-        echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
-        echo "ANDROID_HOME=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
         echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/25.2.9519653" >> $GITHUB_ENV
         echo "ANDROID_NDK_ROOT=$ANDROID_SDK_ROOT/ndk/25.2.9519653" >> $GITHUB_ENV
 
-    - name: Set up Python environment
-      run: |
-        python -m pip install --upgrade pip
-        python -m pip install --upgrade \
-          buildozer \
-          Cython==0.29.33 \
-          virtualenv \
-          setuptools \
-          wheel
-
     - name: Create buildozer spec if missing
       run: |
+        source buildozer-venv/bin/activate
         if [ ! -f buildozer.spec ]; then
           echo "Creating default buildozer.spec file..."
           buildozer init
-          # Apply optimizations
-          sed -i 's/^#android.accept_sdk_license = False/android.accept_sdk_license = True/' buildozer.spec
-          sed -i 's/^#android.ndk_path = .*/android.ndk_path = \$ANDROID_NDK_HOME/' buildozer.spec
-          sed -i 's/^#android.sdk_path = .*/android.sdk_path = \$ANDROID_SDK_ROOT/' buildozer.spec
-          sed -i 's/^#android.api = .*/android.api = 33/' buildozer.spec
-          sed -i 's/^#android.minapi = .*/android.minapi = 21/' buildozer.spec
-          sed -i 's/^#android.ndk_api = .*/android.ndk_api = 21/' buildozer.spec
         else
           echo "buildozer.spec already exists"
         fi
-
-    - name: Optimize buildozer.spec
-      run: |
-        # Backup original spec
-        cp buildozer.spec buildozer.spec.backup
-        
-        # Apply optimizations for faster builds
-        sed -i 's/^title = .*/title = My App/' buildozer.spec
-        sed -i 's/^package.name = .*/package.name = myapp/' buildozer.spec
-        sed -i 's/^package.domain = .*/package.domain = org.test/' buildozer.spec
-        
-        # Build only one architecture to speed up build
-        sed -i 's/^android.arch = .*/android.arch = arm64-v8a/' buildozer.spec
-        
-        # Enable faster builds
-        sed -i 's/^#android.skip_update = False/android.skip_update = True/' buildozer.spec
-        sed -i 's/^#android.accept_sdk_license = False/android.accept_sdk_license = True/' buildozer.spec
-        
-        # Optimize build settings
-        sed -i 's/^#android.num_cores = .*/android.num_cores = 2/' buildozer.spec
-        sed -i 's/^#build_config = .*/build_config = -O2/' buildozer.spec
-        
-        # Show differences
-        echo "=== Buildozer spec optimizations applied ==="
-        diff -u buildozer.spec.backup buildozer.spec || true
 
     - name: Build APK with Buildozer
       env:
@@ -147,57 +117,44 @@ jobs:
         ANDROID_HOME: $HOME/android-sdk
         ANDROID_NDK_HOME: $HOME/android-sdk/ndk/25.2.9519653
         ANDROID_NDK_ROOT: $HOME/android-sdk/ndk/25.2.9519653
-        PATH: $HOME/android-sdk/cmdline-tools/latest/bin:$HOME/android-sdk/platform-tools:$HOME/android-sdk/build-tools/33.0.2:$PATH
       run: |
-        set -x
+        source buildozer-venv/bin/activate
         
-        # Create logs directory
-        mkdir -p build_logs
+        # Create logs directory using absolute path
+        /usr/bin/mkdir -p build_logs
         
         echo "=== Starting Buildozer Build ==="
         echo "Python version: $(python --version)"
         echo "Buildozer version: $(buildozer --version 2>/dev/null || echo 'not available')"
+        echo "PATH: $PATH"
         
         # Build with timeout and logging
-        timeout 45m buildozer -v android debug 2>&1 | tee build_logs/buildozer_full.log
+        /usr/bin/timeout 45m buildozer -v android debug 2>&1 | /usr/bin/tee build_logs/buildozer_full.log
         
         BUILD_STATUS=${PIPESTATUS[0]}
         
         if [ $BUILD_STATUS -eq 124 ]; then
           echo "Build timed out after 45 minutes"
-          echo "TIMEOUT" > build_logs/build_status.txt
+          /usr/bin/echo "TIMEOUT" > build_logs/build_status.txt
         elif [ $BUILD_STATUS -ne 0 ]; then
           echo "Build failed with exit code: $BUILD_STATUS"
-          echo "FAILED:$BUILD_STATUS" > build_logs/build_status.txt
+          /usr/bin/echo "FAILED:$BUILD_STATUS" > build_logs/build_status.txt
         else
           echo "Build completed successfully"
-          echo "SUCCESS" > build_logs/build_status.txt
+          /usr/bin/echo "SUCCESS" > build_logs/build_status.txt
         fi
         
         # Capture key error patterns
-        grep -n -E "ERROR|Error|error|FAILED|Failed|failed|Exception|Traceback" build_logs/buildozer_full.log > build_logs/errors.log || true
+        /usr/bin/grep -n -E "ERROR|Error|error|FAILED|Failed|failed|Exception|Traceback" build_logs/buildozer_full.log > build_logs/errors.log || true
         
         exit $BUILD_STATUS
-
-    - name: Diagnostic information
-      if: always()
-      run: |
-        echo "=== Build Diagnostic Information ==="
-        echo "Working directory: $(pwd)"
-        echo "Directory contents:"
-        ls -la
-        echo "Bin directory:"
-        ls -la bin/ 2>/dev/null || echo "No bin directory"
-        echo "Buildozer directory structure:"
-        find .buildozer -type f -name "*.log" | head -20
 
     - name: Upload APK artifact
       if: success()
       uses: actions/upload-artifact@v4
       with:
         name: android-apk
-        path: |
-          bin/*.apk
+        path: bin/*.apk
         retention-days: 7
 
     - name: Upload build logs
@@ -205,38 +162,5 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: build-logs
-        path: |
-          build_logs/
-          .buildozer/**/*.log
+        path: build_logs/
         retention-days: 30
-
-    - name: Build failure summary
-      if: failure()
-      run: |
-        echo "## Build Failure Summary" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "The Android APK build failed. Here are the key details:" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        
-        if [ -f "build_logs/errors.log" ]; then
-          echo "### Key Errors Found:" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          head -50 build_logs/errors.log >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-        else
-          echo "No specific error log found." >> $GITHUB_STEP_SUMMARY
-        fi
-        
-        if [ -f "build_logs/build_status.txt" ]; then
-          echo "### Build Status:" >> $GITHUB_STEP_SUMMARY
-          cat build_logs/build_status.txt >> $GITHUB_STEP_SUMMARY
-        fi
-
-    - name: Build success summary
-      if: success()
-      run: |
-        echo "## Build Success Summary" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "✅ Android APK built successfully!" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "The APK file has been uploaded as an artifact and can be downloaded from the Actions page." >> $GITHUB_STEP_SUMMARY
