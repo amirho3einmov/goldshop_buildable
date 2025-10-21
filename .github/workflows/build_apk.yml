@@ -68,8 +68,6 @@ jobs:
         echo "ANDROID_HOME=/usr/local/lib/android/sdk" >> $GITHUB_ENV
         echo "ANDROID_NDK_HOME=/usr/local/lib/android/sdk/ndk/25.2.9519653" >> $GITHUB_ENV
         echo "ANDROID_NDK_ROOT=/usr/local/lib/android/sdk/ndk/25.2.9519653" >> $GITHUB_ENV
-        
-        # Add Android tools to PATH
         echo "/usr/local/lib/android/sdk/cmdline-tools/latest/bin" >> $GITHUB_PATH
         echo "/usr/local/lib/android/sdk/platform-tools" >> $GITHUB_PATH
         echo "/usr/local/lib/android/sdk/build-tools/33.0.2" >> $GITHUB_PATH
@@ -77,32 +75,21 @@ jobs:
     - name: Install required Android packages
       run: |
         source buildozer-venv/bin/activate
-        # Accept licenses
         yes | sdkmanager --licenses || true
-        
-        # Install required packages
         sdkmanager "platforms;android-33" "build-tools;33.0.2" "platform-tools"
 
     - name: Create proper AIDL wrapper script
       run: |
-        # Create a proper wrapper that handles the version check
         cat > /usr/local/bin/aidl << 'EOF'
         #!/bin/bash
-        # AIDL wrapper that handles version checks for buildozer
         if [ "$1" = "--version" ] && [ $# -eq 1 ]; then
-          # Buildozer calls aidl --version without arguments
-          # Return a fake version that satisfies the check
           echo "33.0.2"
           exit 0
         else
-          # Pass all other arguments to the real AIDL
           exec /usr/local/lib/android/sdk/build-tools/33.0.2/aidl "$@"
         fi
         EOF
-        
         chmod +x /usr/local/bin/aidl
-        
-        # Verify the wrapper works
         echo "=== Testing AIDL wrapper ==="
         which aidl
         aidl --version
@@ -111,18 +98,14 @@ jobs:
     - name: Patch Buildozer to skip AIDL version check
       run: |
         source buildozer-venv/bin/activate
-        # Find the buildozer installation and patch the AIDL version check
         BUILDOCER_PATH=$(python -c "import buildozer.targets.android as a; print(a.__file__)" 2>/dev/null || echo "")
         if [ -n "$BUILDOCER_PATH" ]; then
           echo "Patching Buildozer at: $BUILDOCER_PATH"
-          # Create a backup
           cp "$BUILDOCER_PATH" "${BUILDOCER_PATH}.backup"
-          # Patch the AIDL version check to always return success
           python -c "
 import re
 with open('$BUILDOCER_PATH', 'r') as f:
     content = f.read()
-# Replace the AIDL version check with a simpler version
 content = re.sub(r'def check_aidl.*?(?=def|\Z)', 'def check_aidl(self):\\n        # Patched: Skip AIDL version check\\n        return True\\n\\n', content, flags=re.DOTALL)
 with open('$BUILDOCER_PATH', 'w') as f:
     f.write(content)
@@ -146,27 +129,19 @@ with open('$BUILDOCER_PATH', 'w') as f:
       run: |
         source buildozer-venv/bin/activate
         if [ -f buildozer.spec ]; then
-          # Backup original
           cp buildozer.spec buildozer.spec.backup
-          
-          # Apply optimizations
           sed -i 's/^#android.accept_sdk_license = .*/android.accept_sdk_license = True/' buildozer.spec
           sed -i 's/^#android.sdk_path = .*/android.sdk_path = \/usr\/local\/lib\/android\/sdk/' buildozer.spec
           sed -i 's/^#android.ndk_path = .*/android.ndk_path = \/usr\/local\/lib\/android\/sdk\/ndk\/25.2.9519653/' buildozer.spec
           sed -i 's/^#android.api = .*/android.api = 33/' buildozer.spec
           sed -i 's/^#android.minapi = .*/android.minapi = 21/' buildozer.spec
           sed -i 's/^#android.ndk_api = .*/android.ndk_api = 21/' buildozer.spec
-          
-          # Build only one architecture
           sed -i 's/^android.arch = .*/android.arch = arm64-v8a/' buildozer.spec
-          
-          # Skip AIDL check in spec
           if ! grep -q "android.skip_aidl_check" buildozer.spec; then
             echo "" >> buildozer.spec
             echo "# Skip AIDL version check" >> buildozer.spec
             echo "android.skip_aidl_check = True" >> buildozer.spec
           fi
-          
           echo "=== Modified buildozer.spec ==="
           grep -E "^(android\.|#android\.)" buildozer.spec | head -20
         fi
@@ -174,25 +149,16 @@ with open('$BUILDOCER_PATH', 'w') as f:
     - name: Build APK with Buildozer
       run: |
         source buildozer-venv/bin/activate
-        
-        # Create logs directory
         mkdir -p build_logs
-        
         echo "=== Starting Buildozer Build ==="
         echo "Python version: $(python --version)"
         echo "Buildozer version: $(buildozer --version 2>/dev/null || echo 'not available')"
         echo "AIDL test: $(aidl --version 2>/dev/null || echo 'AIDL version check failed')"
-        
-        # Build with detailed logging
         buildozer -v android debug 2>&1 | tee build_logs/buildozer_full.log
-        
         BUILD_STATUS=${PIPESTATUS[0]}
-        
         if [ $BUILD_STATUS -ne 0 ]; then
           echo "Build failed with exit code: $BUILD_STATUS"
           echo "FAILED:$BUILD_STATUS" > build_logs/build_status.txt
-          
-          # Extract errors
           grep -n -E "ERROR|Error|error|FAILED|Failed|failed|Exception|Traceback|aidl" build_logs/buildozer_full.log > build_logs/errors.log || true
           echo "=== Key errors found ==="
           head -20 build_logs/errors.log || echo "No specific errors logged"
@@ -200,7 +166,6 @@ with open('$BUILDOCER_PATH', 'w') as f:
           echo "Build completed successfully"
           echo "SUCCESS" > build_logs/build_status.txt
         fi
-        
         exit $BUILD_STATUS
 
     - name: Check for APK files
@@ -234,14 +199,12 @@ with open('$BUILDOCER_PATH', 'w') as f:
       if: always()
       run: |
         echo "## Build Summary" >> $GITHUB_STEP_SUMMARY
-        
         if [ -f "build_logs/build_status.txt" ]; then
           STATUS=$(cat build_logs/build_status.txt)
           echo "**Status:** $STATUS" >> $GITHUB_STEP_SUMMARY
         else
           echo "**Status:** UNKNOWN" >> $GITHUB_STEP_SUMMARY
         fi
-        
         APK_FOUND=$(find . -name "*.apk" -type f 2>/dev/null | head -1)
         if [ -n "$APK_FOUND" ]; then
           echo "**APK Generated:** ✅ Yes" >> $GITHUB_STEP_SUMMARY
@@ -250,7 +213,6 @@ with open('$BUILDOCER_PATH', 'w') as f:
         else
           echo "**APK Generated:** ❌ No" >> $GITHUB_STEP_SUMMARY
         fi
-        
         if [ -f "build_logs/errors.log" ]; then
           echo "**Key Errors:**" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
