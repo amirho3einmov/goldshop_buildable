@@ -44,7 +44,7 @@ jobs:
           zlib1g-dev \
           libncurses5-dev \
           libncursesw5-dev \
-          libtinfo5 \
+          libtinfo6 \
           cmake \
           curl \
           wget
@@ -141,43 +141,6 @@ jobs:
         echo "=== Buildozer spec optimizations applied ==="
         diff -u buildozer.spec.backup buildozer.spec || true
 
-    - name: Create build environment setup script
-      run: |
-        mkdir -p .buildozer
-        cat > .buildozer/android_env.sh << 'EOF'
-        # Android environment setup
-        export ANDROID_SDK_ROOT="$HOME/android-sdk"
-        export ANDROID_HOME="$ANDROID_SDK_ROOT"
-        export ANDROID_NDK_HOME="$ANDROID_SDK_ROOT/ndk/25.2.9519653"
-        export ANDROID_NDK_ROOT="$ANDROID_NDK_HOME"
-        export PATH="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$PATH"
-        export PATH="$ANDROID_SDK_ROOT/platform-tools:$PATH"
-        export PATH="$ANDROID_SDK_ROOT/build-tools/33.0.2:$PATH"
-        
-        # Buildozer configuration
-        export BUILDOZER_USE_COLORS=1
-        export BUILDOZER_LOG_LEVEL=2
-        
-        echo "Android environment configured"
-        echo "SDK: $ANDROID_SDK_ROOT"
-        echo "NDK: $ANDROID_NDK_HOME"
-        EOF
-        
-        chmod +x .buildozer/android_env.sh
-
-    - name: Pre-download SDL dependencies
-      run: |
-        # Pre-download common SDL dependencies to avoid timeout issues
-        mkdir -p sdl_cache
-        cd sdl_cache
-        
-        # Download SDL2_image dependencies manually
-        wget -q https://github.com/libjpeg-turbo/libjpeg-turbo/archive/refs/tags/2.1.5.1.tar.gz -O libjpeg-turbo-2.1.5.1.tar.gz || true
-        wget -q https://github.com/glennrp/libpng/archive/refs/tags/v1.6.39.tar.gz -O libpng-1.6.39.tar.gz || true
-        wget -q https://github.com/webmproject/libwebp/archive/refs/tags/v1.3.2.tar.gz -O libwebp-1.3.2.tar.gz || true
-        
-        echo "Pre-downloaded SDL dependencies"
-
     - name: Build APK with Buildozer
       env:
         ANDROID_SDK_ROOT: $HOME/android-sdk
@@ -187,9 +150,6 @@ jobs:
         PATH: $HOME/android-sdk/cmdline-tools/latest/bin:$HOME/android-sdk/platform-tools:$HOME/android-sdk/build-tools/33.0.2:$PATH
       run: |
         set -x
-        
-        # Source environment
-        source .buildozer/android_env.sh
         
         # Create logs directory
         mkdir -p build_logs
