@@ -7,6 +7,22 @@ jobs:
     runs-on: ubuntu-22.04        # <- changed from ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: |
+            platform-tools
+            platforms;android-33
+            build-tools;33.0.2
+
+      - name: Build APK
+        uses: digreatbrian/buildozer-action@v2
+        with:
+          python-version: 3.8
+          buildozer-cmd: buildozer -v android debug
+
+      - uses: actions/checkout@v4
       - name: Build APK
         uses: digreatbrian/buildozer-action@v2
         with:
