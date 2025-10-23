@@ -1,4 +1,4 @@
-name: android-build
+name: Android Build
 
 on:
   push:
@@ -11,31 +11,70 @@ jobs:
       ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - name: Setup Java 17
+      - name: Setup Java 17 (Temurin)
         uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
 
-      - name: Ensure SDK dir exists
+      - name: Ensure required packages (wget/unzip/ca-certificates)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wget unzip ca-certificates
+
+      - name: Create Android SDK directory and set ownership
         run: |
           sudo mkdir -p "$ANDROID_SDK_ROOT"
           sudo chown -R $USER:$USER "$ANDROID_SDK_ROOT"
 
-      - name: Setup Android SDK and Build Tools
-        uses: android-actions/setup-android@v3
-        with:
-          packages: |
-            platform-tools
-            platforms;android-33
-            build-tools;33.0.2
-            cmdline-tools;latest
-
-      - name: Accept Android SDK licenses
+      - name: Install Android commandline-tools (if absent) and packages
+        env:
+          ANDROID_SDK_ROOT: ${{ env.ANDROID_SDK_ROOT }}
         run: |
-          yes | "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$ANDROID_SDK_ROOT" --licenses || true
+          set -euo pipefail
+
+          SDKMANAGER="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+
+          # Download & install commandline-tools if sdkmanager not present
+          if [ ! -x "$SDKMANAGER" ]; then
+            echo "cmdline-tools not found, downloading..."
+            TMP_ZIP="/tmp/cmdline-tools.zip"
+            # Use the latest command line tools zip (this URL is stable for commandlinetools linux)
+            wget -q -O "$TMP_ZIP" "https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip"
+            unzip -q "$TMP_ZIP" -d /tmp/cmdline
+            mkdir -p "$ANDROID_SDK_ROOT/cmdline-tools"
+            # move as 'latest' so path is predictable
+            mv /tmp/cmdline/cmdline-tools "$ANDROID_SDK_ROOT/cmdline-tools/latest"
+            rm -f "$TMP_ZIP"
+            chmod -R a+rX "$ANDROID_SDK_ROOT/cmdline-tools"
+          else
+            echo "cmdline-tools already installed"
+          fi
+
+          SDKMANAGER="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          export PATH="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$PATH"
+
+          # Accept licenses non-interactively
+          yes | "$SDKMANAGER" --sdk_root="$ANDROID_SDK_ROOT" --licenses || true
+
+          # Install packages explicitly as separate arguments (no newlines-in-arg bug)
+          yes | "$SDKMANAGER" --sdk_root="$ANDROID_SDK_ROOT" \
+            "platform-tools" \
+            "platforms;android-33" \
+            "build-tools;33.0.2" \
+            "cmdline-tools;latest"
+
+      - name: Inspect SDK & verify aidl
+        run: |
+          echo "SDK root: $ANDROID_SDK_ROOT"
+          ls -la "$ANDROID_SDK_ROOT" || true
+          echo "build-tools dirs:"
+          ls -la "$ANDROID_SDK_ROOT/build-tools" || true
+          echo "finding aidl:"
+          find "$ANDROID_SDK_ROOT" -name aidl -type f -exec ls -l {} \; || true
 
       - name: Build APK
         uses: digreatbrian/buildozer-action@v2
