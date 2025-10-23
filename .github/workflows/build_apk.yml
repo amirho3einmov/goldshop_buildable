@@ -17,137 +17,117 @@ jobs:
       ANDROID_NDK_ROOT: /usr/local/lib/android/sdk/ndk/25.2.9519653
 
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-    - name: Use Python 3.10 (avoid distutils removal issues)
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.10'
+      - name: Use Python 3.10 (avoid distutils removal issues)
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
 
-    - name: Install system dependencies (includes python3-distutils)
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y --no-install-recommends \
-          git build-essential zip unzip openjdk-17-jdk \
-          autoconf automake libtool pkg-config zlib1g-dev \
-          libncurses5-dev libncursesw5-dev libtinfo6 cmake curl wget \
-          python3 python3-pip python3-venv python3-distutils ca-certificates \
-          libssl-dev
+      - name: Install system dependencies (includes python3-distutils)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends git build-essential zip unzip openjdk-17-jdk autoconf automake libtool pkg-config zlib1g-dev libncurses5-dev libncursesw5-dev libtinfo6 cmake curl wget python3 python3-pip python3-venv python3-distutils ca-certificates libssl-dev
 
-    - name: Setup Java
-      uses: actions/setup-java@v4
-      with:
-        distribution: 'temurin'
-        java-version: '17'
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
 
-    - name: Create and activate virtual environment
-      run: |
-        python -m venv buildozer-venv
-        echo "VIRTUAL_ENV=$PWD/buildozer-venv" >> $GITHUB_ENV
-        echo "$PWD/buildozer-venv/bin" >> $GITHUB_PATH
-        # don't `source` here because each step runs in a separate shell; we'll source in steps that need it
+      - name: Create virtual environment and expose to PATH
+        run: |
+          python -m venv buildozer-venv
+          echo "VIRTUAL_ENV=$PWD/buildozer-venv" >> $GITHUB_ENV
+          echo "$PWD/buildozer-venv/bin" >> $GITHUB_PATH
 
-    - name: Configure Android SDK environment in PATH
-      run: |
-        echo "/usr/local/lib/android/sdk/cmdline-tools/latest/bin" >> $GITHUB_PATH
-        echo "/usr/local/lib/android/sdk/platform-tools" >> $GITHUB_PATH
-        echo "/usr/local/lib/android/sdk/build-tools/33.0.2" >> $GITHUB_PATH
-        echo "ANDROID_SDK_ROOT=/usr/local/lib/android/sdk" >> $GITHUB_ENV
-        echo "ANDROID_HOME=/usr/local/lib/android/sdk" >> $GITHUB_ENV
+      - name: Configure Android SDK env and PATH
+        run: |
+          echo "/usr/local/lib/android/sdk/cmdline-tools/latest/bin" >> $GITHUB_PATH
+          echo "/usr/local/lib/android/sdk/platform-tools" >> $GITHUB_PATH
+          echo "/usr/local/lib/android/sdk/build-tools/33.0.2" >> $GITHUB_PATH
+          echo "ANDROID_SDK_ROOT=/usr/local/lib/android/sdk" >> $GITHUB_ENV
+          echo "ANDROID_HOME=/usr/local/lib/android/sdk" >> $GITHUB_ENV
 
-    - name: Ensure cmdline-tools installed and sdkmanager available
-      run: |
-        # On GitHub runners sdkmanager is usually available; attempt to install cmdline-tools if missing
-        if [ ! -d "$ANDROID_SDK_ROOT/cmdline-tools/latest" ]; then
-          sudo mkdir -p $ANDROID_SDK_ROOT/cmdline-tools
-          # try to use sdkmanager that's on PATH; if not available we fail gracefully
-          if command -v sdkmanager >/dev/null 2>&1; then
-            yes | sdkmanager --install "cmdline-tools;latest" || true
+      - name: Ensure cmdline-tools and sdkmanager are available
+        run: |
+          if [ ! -d "$ANDROID_SDK_ROOT/cmdline-tools/latest" ]; then
+            sudo mkdir -p $ANDROID_SDK_ROOT/cmdline-tools
+            if command -v sdkmanager >/dev/null 2>&1; then
+              yes | sdkmanager --install "cmdline-tools;latest" || true
+            else
+              echo "sdkmanager not on PATH; runner may already have SDK installed"
+            fi
           else
-            echo "sdkmanager not available on PATH; attempting to bootstrap via packages (if runner already has SDK this is ok)"
+            echo "cmdline-tools already present"
           fi
-        else
-          echo "cmdline-tools already installed"
-        fi
 
-    - name: Install required Android packages (retry on transient network errors)
-      run: |
-        PKGS=("platforms;android-33" "build-tools;33.0.2" "platform-tools")
-        for pkg in "${PKGS[@]}"; do
-          echo "Installing $pkg"
-          for i in 1 2 3; do
-            sdkmanager "$pkg" && break || (echo "retry $i for $pkg" && sleep 3)
+      - name: Install required Android packages (with retries)
+        run: |
+          PKGS=("platforms;android-33" "build-tools;33.0.2" "platform-tools")
+          for pkg in "${PKGS[@]}"; do
+            echo "Installing $pkg"
+            for i in 1 2 3; do
+              sdkmanager "$pkg" && break || (echo "retry $i for $pkg" && sleep 3)
+            done
           done
-        done
-        yes | sdkmanager --licenses || true
+          yes | sdkmanager --licenses || true
 
-    - name: Create and activate venv & install Python packages
-      run: |
-        source buildozer-venv/bin/activate
-        python -m pip install --upgrade pip
-        # pin setuptools to avoid breaking changes, ensure buildozer and common deps installed
-        python -m pip install setuptools==65.5.0
-        python -m pip install --upgrade \
-          buildozer \
-          Cython==0.29.33 \
-          virtualenv \
-          wheel
-        python -m pip list
+      - name: Activate venv & install Python packages
+        run: |
+          source buildozer-venv/bin/activate
+          python -m pip install --upgrade pip
+          python -m pip install setuptools==65.5.0
+          python -m pip install --upgrade buildozer Cython==0.29.33 virtualenv wheel
+          python -m pip list
 
-    - name: Diagnostics: Java / Android / Python
-      run: |
-        source buildozer-venv/bin/activate
-        java -version || true
-        echo "JAVA_HOME=$JAVA_HOME"
-        echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
-        which sdkmanager || true
-        sdkmanager --list | head -n 40 || true
-        python --version
-        pip --version
+      - name: Diagnostics: Java / Android / Python
+        run: |
+          source buildozer-venv/bin/activate
+          java -version || true
+          echo "JAVA_HOME=$JAVA_HOME"
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+          which sdkmanager || true
+          sdkmanager --list | head -n 40 || true
+          python --version
+          pip --version
 
-    - name: Replace build-tools aidl with wrapper (backup original and keep orig at .orig)
-      run: |
-        set -euo pipefail
-        BUILD_TOOLS_DIR="$ANDROID_SDK_ROOT/build-tools/33.0.2"
-        BUILD_TOOLS_AIDL="$BUILD_TOOLS_DIR/aidl"
-        BACKUP="$BUILD_TOOLS_AIDL.orig"
+      - name: Replace build-tools aidl with wrapper (backup original)
+        run: |
+          set -euo pipefail
+          BUILD_TOOLS_DIR="$ANDROID_SDK_ROOT/build-tools/33.0.2"
+          BUILD_TOOLS_AIDL="$BUILD_TOOLS_DIR/aidl"
+          BACKUP="$BUILD_TOOLS_AIDL.orig"
 
-        if [ -f "$BUILD_TOOLS_AIDL" ]; then
-          sudo cp "$BUILD_TOOLS_AIDL" "$BACKUP" || true
-        fi
+          if [ -f "$BUILD_TOOLS_AIDL" ]; then
+            sudo cp "$BUILD_TOOLS_AIDL" "$BACKUP" || true
+          fi
 
-        sudo tee "$BUILD_TOOLS_AIDL" > /dev/null <<'EOF'
+          sudo tee "$BUILD_TOOLS_AIDL" > /dev/null <<'EOF'
 #!/bin/bash
-# Wrapper for AIDL shipped in build-tools 33.0.2
-ORIG="/usr/local/lib/android/sdk/build-tools/33.0.2/aidl.orig"
-# If orig not found, try same directory with .bin fallback
-if [ ! -x "$ORIG" ] && [ -x "$(dirname "$0")/aidl.orig" ]; then
-  ORIG="$(dirname "$0")/aidl.orig"
-fi
+# Minimal wrapper for aidl: answer --version, otherwise exec original.
+ORIG_FILE="$(dirname "$0")/aidl.orig"
 if [ "$1" = "--version" ] && [ $# -eq 1 ]; then
-  # Return a stable version string expected by buildozer
   echo "33.0.2"
   exit 0
+fi
+if [ -x "$ORIG_FILE" ]; then
+  exec "$ORIG_FILE" "$@"
 else
-  if [ -x "$ORIG" ]; then
-    exec "$ORIG" "$@"
-  else
-    # fallback to executing whatever path this script was invoked as
-    exec "/usr/local/lib/android/sdk/build-tools/33.0.2/aidl.orig" "$@"
-  fi
+  # fallback to original if exists
+  exec "$(dirname "$0")/aidl.orig" "$@"
 fi
 EOF
-        sudo chmod +x "$BUILD_TOOLS_AIDL"
-        echo "Installed wrapper at $BUILD_TOOLS_AIDL (orig backup at $BACKUP if present)"
-        echo "which aidl: $(which aidl || true)"
-        echo "aidl --version output:"
-        aidl --version || true
+          sudo chmod +x "$BUILD_TOOLS_AIDL"
+          echo "Installed wrapper at $BUILD_TOOLS_AIDL (backup at $BACKUP if existed)"
+          echo "which aidl: $(which aidl || true)"
+          aidl --version || true
 
-    - name: Patch Buildozer to skip AIDL version check (safe, idempotent)
-      run: |
-        source buildozer-venv/bin/activate
-        python - <<'PY'
+      - name: Patch Buildozer to skip AIDL version check (idempotent)
+        run: |
+          source buildozer-venv/bin/activate
+          python - <<'PY'
 from pathlib import Path
 import re
 try:
@@ -155,131 +135,128 @@ try:
     p = Path(mod.__file__)
     s = p.read_text()
     if 'def check_aidl' in s:
-        # Replace the function body robustly
         s2 = re.sub(r"def check_aidl\(.*?\):\n(?:\s+.*\n)+?(?=\ndef |\Z)",
-                    "def check_aidl(self, aidl=None):\n        # Patched in CI: skip AIDL check to avoid version mismatch issues\n        return True\n\n",
+                    "def check_aidl(self, aidl=None):\n        # Patched in CI: skip AIDL check\n        return True\n\n",
                     s,
                     flags=re.S)
         if s2 != s:
             p.write_text(s2)
             print('Patched check_aidl in', p)
         else:
-            print('No change made to', p)
+            print('No change needed for', p)
     else:
         print('check_aidl not found in', p)
 except Exception as e:
     print('Could not patch buildozer:', e)
 PY
 
-    - name: Create buildozer.spec if missing
-      run: |
-        source buildozer-venv/bin/activate
-        if [ ! -f buildozer.spec ]; then
-          echo "Creating default buildozer.spec file..."
-          buildozer init
-        else
-          echo "buildozer.spec already exists"
-        fi
+      - name: Create buildozer.spec if missing
+        run: |
+          source buildozer-venv/bin/activate
+          if [ ! -f buildozer.spec ]; then
+            buildozer init
+          else
+            echo "buildozer.spec exists"
+          fi
 
-    - name: Configure buildozer.spec for Android (paths & skip check)
-      run: |
-        source buildozer-venv/bin/activate
-        if [ -f buildozer.spec ]; then
-          cp buildozer.spec buildozer.spec.backup
-          sed -i 's/^#android.accept_sdk_license = .*/android.accept_sdk_license = True/' buildozer.spec || true
-          sed -i 's|^#android.sdk_path = .*|android.sdk_path = /usr/local/lib/android/sdk|' buildozer.spec || true
-          sed -i 's|^#android.ndk_path = .*|android.ndk_path = /usr/local/lib/android/sdk/ndk/25.2.9519653|' buildozer.spec || true
-          sed -i 's/^#android.api = .*/android.api = 33/' buildozer.spec || true
-          sed -i 's/^#android.minapi = .*/android.minapi = 21/' buildozer.spec || true
-          sed -i 's/^#android.ndk_api = .*/android.ndk_api = 21/' buildozer.spec || true
-          sed -i 's/^android.arch = .*/android.arch = arm64-v8a/' buildozer.spec || true
-          if ! grep -q "android.skip_aidl_check" buildozer.spec; then
-            cat >> buildozer.spec <<'EOT'
+      - name: Configure buildozer.spec for Android (paths & skip check)
+        run: |
+          source buildozer-venv/bin/activate
+          if [ -f buildozer.spec ]; then
+            cp buildozer.spec buildozer.spec.backup
+            sed -i 's/^#android.accept_sdk_license = .*/android.accept_sdk_license = True/' buildozer.spec || true
+            sed -i 's|^#android.sdk_path = .*|android.sdk_path = /usr/local/lib/android/sdk|' buildozer.spec || true
+            sed -i 's|^#android.ndk_path = .*|android.ndk_path = /usr/local/lib/android/sdk/ndk/25.2.9519653|' buildozer.spec || true
+            sed -i 's/^#android.api = .*/android.api = 33/' buildozer.spec || true
+            sed -i 's/^#android.minapi = .*/android.minapi = 21/' buildozer.spec || true
+            sed -i 's/^#android.ndk_api = .*/android.ndk_api = 21/' buildozer.spec || true
+            sed -i 's/^android.arch = .*/android.arch = arm64-v8a/' buildozer.spec || true
+            if ! grep -q "android.skip_aidl_check" buildozer.spec; then
+              cat >> buildozer.spec <<'EOT'
 
 # Skip AIDL version check (CI helper)
 android.skip_aidl_check = True
 EOT
+            fi
+            echo "Modified buildozer.spec (head):"
+            grep -E "^(android\.|#android\.)" buildozer.spec | head -20 || true
+          else
+            echo "No buildozer.spec found to configure"
           fi
-          echo "=== Modified buildozer.spec (head) ==="
-          grep -E "^(android\.|#android\.)" buildozer.spec | head -20 || true
-        else
-          echo "No buildozer.spec to configure"
-        fi
 
-    - name: Build APK with Buildozer (capture logs)
-      run: |
-        set -o pipefail
-        source buildozer-venv/bin/activate
-        mkdir -p build_logs
-        echo "=== Starting Buildozer Build ==="
-        echo "Python version: $(python --version)"
-        echo "Buildozer version: $(buildozer --version 2>/dev/null || echo 'not available')"
-        echo "AIDL test (which): $(which aidl 2>/dev/null || true)"
-        aidl --version 2>&1 || true
-        # Run buildozer and capture output
-        buildozer -v android debug 2>&1 | tee build_logs/buildozer_full.log
-        BUILD_STATUS=${PIPESTATUS[0]}
-        echo "Build exit code: $BUILD_STATUS"
-        if [ "$BUILD_STATUS" -ne 0 ]; then
-          echo "Build failed with exit code: $BUILD_STATUS"
-          echo "FAILED:$BUILD_STATUS" > build_logs/build_status.txt
-          grep -n -E "ERROR|Error|error|FAILED|Failed|failed|Exception|Traceback|aidl" build_logs/buildozer_full.log > build_logs/errors.log || true
-          echo "=== Key errors found ==="
-          head -40 build_logs/errors.log || true
-        else
-          echo "Build completed successfully"
-          echo "SUCCESS" > build_logs/build_status.txt
-        fi
-        exit $BUILD_STATUS
+      - name: Build APK with Buildozer (capture logs)
+        run: |
+          set -o pipefail
+          source buildozer-venv/bin/activate
+          mkdir -p build_logs
+          echo "=== Starting Buildozer Build ==="
+          echo "Python version: $(python --version)"
+          echo "Buildozer version: $(buildozer --version 2>/dev/null || echo 'not available')"
+          echo "AIDL test (which): $(which aidl 2>/dev/null || true)"
+          aidl --version 2>&1 || true
+          buildozer -v android debug 2>&1 | tee build_logs/buildozer_full.log
+          BUILD_STATUS=${PIPESTATUS[0]}
+          echo "Build exit code: $BUILD_STATUS"
+          if [ "$BUILD_STATUS" -ne 0 ]; then
+            echo "Build failed with exit code: $BUILD_STATUS"
+            echo "FAILED:$BUILD_STATUS" > build_logs/build_status.txt
+            grep -n -E "ERROR|Error|error|FAILED|Failed|failed|Exception|Traceback|aidl" build_logs/buildozer_full.log > build_logs/errors.log || true
+            echo "=== Key errors found ==="
+            head -40 build_logs/errors.log || true
+          else
+            echo "Build completed successfully"
+            echo "SUCCESS" > build_logs/build_status.txt
+          fi
+          exit $BUILD_STATUS
 
-    - name: Check for APK files (always)
-      if: always()
-      run: |
-        echo "=== Checking for APK files ==="
-        find . -name "*.apk" -type f 2>/dev/null | sed -n '1,50p' || echo "No APK found"
-        ls -la bin/ 2>/dev/null || true
-        find .buildozer -name "*.apk" -type f 2>/dev/null | sed -n '1,50p' || true
+      - name: Check for APK files (always)
+        if: always()
+        run: |
+          echo "=== Checking for APK files ==="
+          find . -name "*.apk" -type f 2>/dev/null | sed -n '1,50p' || echo "No APK found"
+          ls -la bin/ 2>/dev/null || true
+          find .buildozer -name "*.apk" -type f 2>/dev/null | sed -n '1,50p' || true
 
-    - name: Upload APK artifact (if found)
-      if: success()
-      uses: actions/upload-artifact@v4
-      with:
-        name: android-apk
-        path: |
-          bin/*.apk
-          .buildozer/android/platform/build-*/dists/*/build/outputs/apk/*.apk
-        if-no-files-found: warn
-        retention-days: 7
+      - name: Upload APK artifact (if found)
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-apk
+          path: |
+            bin/*.apk
+            .buildozer/android/platform/build-*/dists/*/build/outputs/apk/*.apk
+          if-no-files-found: warn
+          retention-days: 7
 
-    - name: Upload build logs
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: build-logs
-        path: build_logs/
-        retention-days: 30
+      - name: Upload build logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: build_logs/
+          retention-days: 30
 
-    - name: Build summary
-      if: always()
-      run: |
-        echo "## Build Summary" >> $GITHUB_STEP_SUMMARY
-        if [ -f "build_logs/build_status.txt" ]; then
-          STATUS=$(cat build_logs/build_status.txt)
-          echo "**Status:** $STATUS" >> $GITHUB_STEP_SUMMARY
-        else
-          echo "**Status:** UNKNOWN" >> $GITHUB_STEP_SUMMARY
-        fi
-        APK_FOUND=$(find . -name "*.apk" -type f 2>/dev/null | head -1)
-        if [ -n "$APK_FOUND" ]; then
-          echo "**APK Generated:** ✅ Yes" >> $GITHUB_STEP_SUMMARY
-          echo "**APK Location:**" >> $GITHUB_STEP_SUMMARY
-          find . -name "*.apk" -type f 2>/dev/null | head -5 >> $GITHUB_STEP_SUMMARY
-        else
-          echo "**APK Generated:** ❌ No" >> $GITHUB_STEP_SUMMARY
-        fi
-        if [ -f "build_logs/errors.log" ]; then
-          echo "**Key Errors:**" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          head -20 build_logs/errors.log >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-        fi
+      - name: Build summary
+        if: always()
+        run: |
+          echo "## Build Summary" >> $GITHUB_STEP_SUMMARY
+          if [ -f "build_logs/build_status.txt" ]; then
+            STATUS=$(cat build_logs/build_status.txt)
+            echo "**Status:** $STATUS" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "**Status:** UNKNOWN" >> $GITHUB_STEP_SUMMARY
+          fi
+          APK_FOUND=$(find . -name "*.apk" -type f 2>/dev/null | head -1)
+          if [ -n "$APK_FOUND" ]; then
+            echo "**APK Generated:** ✅ Yes" >> $GITHUB_STEP_SUMMARY
+            echo "**APK Location:**" >> $GITHUB_STEP_SUMMARY
+            find . -name "*.apk" -type f 2>/dev/null | head -5 >> $GITHUB_STEP_SUMMARY
+          else
+            echo "**APK Generated:** ❌ No" >> $GITHUB_STEP_SUMMARY
+          fi
+          if [ -f "build_logs/errors.log" ]; then
+            echo "**Key Errors:**" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            head -20 build_logs/errors.log >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          fi
