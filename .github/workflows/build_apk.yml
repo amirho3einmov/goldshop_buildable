@@ -50,10 +50,10 @@ jobs:
           echo "ANDROID_SDK_ROOT=/usr/local/lib/android/sdk" >> $GITHUB_ENV
           echo "ANDROID_HOME=/usr/local/lib/android/sdk" >> $GITHUB_ENV
 
-      - name: Ensure cmdline-tools and sdkmanager are available
+      - name: Ensure cmdline-tools and sdkmanager available
         run: |
           if [ ! -d "$ANDROID_SDK_ROOT/cmdline-tools/latest" ]; then
-            sudo mkdir -p $ANDROID_SDK_ROOT/cmdline-tools
+            sudo mkdir -p "$ANDROID_SDK_ROOT/cmdline-tools"
             if command -v sdkmanager >/dev/null 2>&1; then
               yes | sdkmanager --install "cmdline-tools;latest" || true
             else
@@ -99,29 +99,25 @@ jobs:
           BUILD_TOOLS_DIR="$ANDROID_SDK_ROOT/build-tools/33.0.2"
           BUILD_TOOLS_AIDL="$BUILD_TOOLS_DIR/aidl"
           BACKUP="$BUILD_TOOLS_AIDL.orig"
-
           if [ -f "$BUILD_TOOLS_AIDL" ]; then
             sudo cp "$BUILD_TOOLS_AIDL" "$BACKUP" || true
           fi
-
           sudo tee "$BUILD_TOOLS_AIDL" > /dev/null <<'EOF'
 #!/bin/bash
-# Minimal wrapper for aidl: answer --version, otherwise exec original.
-ORIG_FILE="$(dirname "$0")/aidl.orig"
+# Minimal wrapper: respond to --version, otherwise exec original
+ORIG="$(dirname "$0")/aidl.orig"
 if [ "$1" = "--version" ] && [ $# -eq 1 ]; then
   echo "33.0.2"
   exit 0
 fi
-if [ -x "$ORIG_FILE" ]; then
-  exec "$ORIG_FILE" "$@"
+if [ -x "$ORIG" ]; then
+  exec "$ORIG" "$@"
 else
-  # fallback to original if exists
   exec "$(dirname "$0")/aidl.orig" "$@"
 fi
 EOF
           sudo chmod +x "$BUILD_TOOLS_AIDL"
-          echo "Installed wrapper at $BUILD_TOOLS_AIDL (backup at $BACKUP if existed)"
-          echo "which aidl: $(which aidl || true)"
+          echo "Installed wrapper (backup at $BACKUP if present)"
           aidl --version || true
 
       - name: Patch Buildozer to skip AIDL version check (idempotent)
@@ -135,17 +131,16 @@ try:
     p = Path(mod.__file__)
     s = p.read_text()
     if 'def check_aidl' in s:
-        s2 = re.sub(r"def check_aidl\(.*?\):\n(?:\s+.*\n)+?(?=\ndef |\Z)",
-                    "def check_aidl(self, aidl=None):\n        # Patched in CI: skip AIDL check\n        return True\n\n",
-                    s,
-                    flags=re.S)
+        s2 = re.sub(r"def check_aidl\\(.*?\\):\\n(?:\\s+.*\\n)+?(?=\\ndef |\\Z)",
+                    "def check_aidl(self, aidl=None):\\n    # Patched in CI: skip AIDL check\\n    return True\\n\\n",
+                    s, flags=re.S)
         if s2 != s:
             p.write_text(s2)
             print('Patched check_aidl in', p)
         else:
-            print('No change needed for', p)
+            print('No change needed')
     else:
-        print('check_aidl not found in', p)
+        print('check_aidl not found')
 except Exception as e:
     print('Could not patch buildozer:', e)
 PY
@@ -181,7 +176,7 @@ EOT
             echo "Modified buildozer.spec (head):"
             grep -E "^(android\.|#android\.)" buildozer.spec | head -20 || true
           else
-            echo "No buildozer.spec found to configure"
+            echo "No buildozer.spec found"
           fi
 
       - name: Build APK with Buildozer (capture logs)
