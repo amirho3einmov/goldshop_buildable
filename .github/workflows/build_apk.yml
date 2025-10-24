@@ -234,7 +234,9 @@ jobs:
       # NEW: collect logs and make a single zip
       # ---------------------------
       - name: Collect logs and create zip
+        if: ${{ always() }}
         run: |
+          # <همان اسکریپت جمع‌آوری لاگ‌های شما>
           set -e
           mkdir -p logs
 
