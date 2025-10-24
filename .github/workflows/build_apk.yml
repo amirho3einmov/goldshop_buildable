@@ -19,30 +19,13 @@ jobs:
           sudo apt-get install -y software-properties-common || true
           sudo add-apt-repository -y universe || true
           sudo apt-get update
-
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
-            git \
-            build-essential \
-            zip \
-            unzip \
-            openjdk-17-jdk \
-            autoconf \
-            automake \
-            libtool \
-            pkg-config \
-            zlib1g-dev \
-            libncurses5-dev \
-            libncursesw5-dev \
-            libtinfo6 \
-            cmake \
-            curl \
-            wget \
-            python3 \
-            python3-pip \
-            python3-venv \
-            python3-distutils || true
+            git build-essential zip unzip openjdk-17-jdk \
+            autoconf automake libtool pkg-config zlib1g-dev \
+            libncurses5-dev libncursesw5-dev libtinfo6 cmake \
+            curl wget python3 python3-pip python3-venv python3-distutils || true
 
-          # fallback for libtinfo5 if needed
+          # libtinfo5 fallback
           if ! dpkg -s libtinfo5 >/dev/null 2>&1; then
             if sudo apt-get install -y libtinfo5; then
               echo "libtinfo5 installed."
@@ -71,33 +54,27 @@ jobs:
           java -version || true
           echo "JAVA_HOME=$JAVA_HOME" || true
 
-      - name: Remove any pre-existing Android SDK dirs (ensure a clean install)
+      - name: Remove old Android SDK dirs (clean install)
         run: |
           set -e
-          echo "Removing possible old SDK dirs to avoid mixed/partial installations..."
           rm -rf $HOME/Android/Sdk || true
           rm -rf $HOME/.android/sdk || true
           mkdir -p $HOME/Android || true
-          ls -la $HOME || true
 
       - name: Setup Android SDK (cmdline-tools + platform & build-tools)
         uses: android-actions/setup-android@v3
         with:
-          # install cmdline-tools + platform-tools + platform 28 + build-tools 28.0.1
-          packages: 'cmdline-tools;latest,platform-tools,platforms;android-28,build-tools;28.0.1'
+          # IMPORTANT: space-separated list (NOT comma-separated)
+          packages: 'cmdline-tools;latest platform-tools platforms;android-28 build-tools;28.0.1'
           accept-android-sdk-licenses: true
           log-accepted-android-sdk-licenses: true
 
       - name: Debug show sdkmanager and installed dirs
         run: |
           set -e
-          echo "Where sdkmanager is:"
-          command -v sdkmanager || true
-          echo "List $HOME/Android/Sdk:"
+          echo "sdkmanager path: $(command -v sdkmanager || echo 'not found')"
           ls -la $HOME/Android/Sdk || true
-          echo "List cmdline-tools:"
           ls -la $HOME/Android/Sdk/cmdline-tools || true
-          echo "List build-tools:"
           ls -la $HOME/Android/Sdk/build-tools || true
 
       - name: Link SDK into Buildozer expected location
@@ -113,9 +90,8 @@ jobs:
           set -e
           if [ -x "$HOME/Android/Sdk/build-tools/28.0.1/aidl" ]; then
             echo "aidl present: $HOME/Android/Sdk/build-tools/28.0.1/aidl"
-            "$HOME/Android/Sdk/build-tools/28.0.1/aidl" --help >/dev/null 2>&1 || true
           else
-            echo "aidl not found at expected path."
+            echo "aidl not found at expected path:"
             ls -la "$HOME/Android/Sdk/build-tools" || true
             exit 1
           fi
@@ -126,7 +102,6 @@ jobs:
           python-version: 3.8
           buildozer-cmd: buildozer -v android debug
         env:
-          # Make sure buildozer sees the SDK too (some actions respect env)
           ANDROID_SDK_ROOT: $HOME/Android/Sdk
 
       - name: Upload artifacts
