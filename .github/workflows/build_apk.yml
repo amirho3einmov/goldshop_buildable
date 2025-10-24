@@ -12,9 +12,6 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Create logs directory
-        run: mkdir -p /tmp/build_logs
-
       - name: Install system dependencies (robust, handles libtinfo)
         run: |
           set -e
@@ -83,8 +80,8 @@ jobs:
           else
             echo "libtinfo.so.5 is available (installed or symlinked)."
           fi
-        env:
-          DEBIAN_FRONTEND: noninteractive
+
+
 
       - name: Set up JDK 17 (must run before sdkmanager)
         uses: actions/setup-java@v3
@@ -226,110 +223,17 @@ jobs:
             exit 1
           fi
 
-      - name: Build APK with detailed logging
-        id: build_apk
-        continue-on-error: true
-        run: |
-          set -e
-          # Create build log file
-          BUILD_LOG="/tmp/build_logs/buildozer_build.log"
-          
-          echo "=== Buildozer Android Build Started ===" > $BUILD_LOG
-          echo "Build time: $(date)" >> $BUILD_LOG
-          echo "Current directory: $(pwd)" >> $BUILD_LOG
-          echo "Python version: $(python3 --version)" >> $BUILD_LOG
-          echo "Java version:" >> $BUILD_LOG
-          java -version 2>> $BUILD_LOG
-          
-          echo "=== Environment Variables ===" >> $BUILD_LOG
-          env | sort >> $BUILD_LOG
-          
-          echo "=== Android SDK Information ===" >> $BUILD_LOG
-          echo "ANDROID_SDK_ROOT: $ANDROID_SDK_ROOT" >> $BUILD_LOG
-          echo "ANDROID_HOME: $ANDROID_HOME" >> $BUILD_LOG
-          ls -la $ANDROID_SDK_ROOT >> $BUILD_LOG 2>&1 || true
-          
-          echo "=== Buildozer Version ===" >> $BUILD_LOG
-          buildozer --version >> $BUILD_LOG 2>&1 || echo "Buildozer not found or error" >> $BUILD_LOG
-          
-          echo "=== Starting Buildozer Build ===" >> $BUILD_LOG
-          # Run buildozer with detailed logging
-          buildozer -v android debug 2>&1 | tee -a $BUILD_LOG
-          
-          BUILD_EXIT_CODE=${PIPESTATUS[0]}
-          echo "Buildozer exit code: $BUILD_EXIT_CODE" >> $BUILD_LOG
-          
-          # Check if APK was created
-          if [ -f "./bin/*.apk" ]; then
-            echo "APK created successfully" >> $BUILD_LOG
-            ls -la ./bin/ >> $BUILD_LOG
-          else
-            echo "APK creation failed - no APK files found in ./bin/" >> $BUILD_LOG
-            echo "Contents of ./bin/ directory:" >> $BUILD_LOG
-            ls -la ./bin/ >> $BUILD_LOG 2>&1 || echo "bin directory not found" >> $BUILD_LOG
-          fi
-          
-          echo "=== Build Process Completed ===" >> $BUILD_LOG
-          exit $BUILD_EXIT_CODE
+      - name: Build APK
+        uses: digreatbrian/buildozer-action@v2
+        with:
+          python-version: 3.11
+          buildozer-cmd: buildozer -v android debug
         env:
           ANDROID_SDK_ROOT: $HOME/Android/Sdk
           ANDROID_HOME: $HOME/Android/Sdk
 
-      - name: Collect all logs and system information
-        if: always()
-        run: |
-          set -e
-          LOG_DIR="/tmp/build_logs"
-          
-          # Collect system information
-          echo "=== System Information ===" > $LOG_DIR/system_info.log
-          uname -a >> $LOG_DIR/system_info.log
-          echo "---" >> $LOG_DIR/system_info.log
-          lsb_release -a >> $LOG_DIR/system_info.log 2>&1 || echo "lsb_release not available" >> $LOG_DIR/system_info.log
-          echo "---" >> $LOG_DIR/system_info.log
-          dpkg -l | grep -E "(java|android|sdk|ndk|buildozer|python)" >> $LOG_DIR/system_info.log 2>&1 || true
-          
-          # Collect environment info
-          echo "=== Final Environment ===" > $LOG_DIR/final_env.log
-          env | sort >> $LOG_DIR/final_env.log
-          
-          # Collect SDK directory structure
-          echo "=== SDK Directory Structure ===" > $LOG_DIR/sdk_structure.log
-          find $HOME/Android/Sdk -type f -name "*.exe" -o -name "*.bat" -o -name "*.cmd" -o -name "aidl" -o -name "sdkmanager" -o -name "avdmanager" | head -50 >> $LOG_DIR/sdk_structure.log
-          echo "---" >> $LOG_DIR/sdk_structure.log
-          ls -la $HOME/Android/Sdk/ >> $LOG_DIR/sdk_structure.log
-          echo "---" >> $LOG_DIR/sdk_structure.log
-          ls -la $HOME/Android/Sdk/build-tools/ >> $LOG_DIR/sdk_structure.log
-          
-          # Collect buildozer spec file if exists
-          if [ -f "buildozer.spec" ]; then
-            cp buildozer.spec $LOG_DIR/
-          fi
-          
-          # Create comprehensive log archive
-          cd /tmp
-          zip -r build_logs_complete.zip build_logs/
-          echo "Complete logs saved to: /tmp/build_logs_complete.zip"
-
-      - name: Upload APK artifacts
-        if: steps.build_apk.outcome == 'success'
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: android-apk
-          path: ./bin/*.apk
-
-      - name: Upload complete logs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-logs-complete
-          path: /tmp/build_logs_complete.zip
-          retention-days: 7
-
-      - name: Upload individual log files
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: detailed-build-logs
-          path: /tmp/build_logs/
-          retention-days: 7
+          name: package
+          path: ./bin/*.apk                                  اینو یجوری کن تمام لاگ ها رو توی یک فایل زیپ به من بده تا برای تو بفرستم تا درستش کنی
