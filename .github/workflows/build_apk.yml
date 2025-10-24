@@ -8,10 +8,6 @@ jobs:
   build:
     runs-on: ubuntu-latest
 
-    # Use github.workspace (valid at workflow-evaluation time) for ANDROID_SDK_ROOT
-    env:
-      ANDROID_SDK_ROOT: ${{ github.workspace }}/.android/sdk
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -46,6 +42,7 @@ jobs:
             python3-venv \
             python3-distutils || true
 
+          # fallback for libtinfo5 if needed
           if ! dpkg -s libtinfo5 >/dev/null 2>&1; then
             if sudo apt-get install -y libtinfo5; then
               echo "libtinfo5 installed."
@@ -63,46 +60,63 @@ jobs:
             fi
           fi
 
-      - name: Set up JDK 17
+      - name: Set up JDK 17 (must run before sdkmanager)
         uses: actions/setup-java@v3
         with:
           java-version: '17'
           distribution: 'temurin'
 
+      - name: Print Java info (debug)
+        run: |
+          java -version || true
+          echo "JAVA_HOME=$JAVA_HOME" || true
+
+      - name: Remove any pre-existing Android SDK dirs (ensure a clean install)
+        run: |
+          set -e
+          echo "Removing possible old SDK dirs to avoid mixed/partial installations..."
+          rm -rf $HOME/Android/Sdk || true
+          rm -rf $HOME/.android/sdk || true
+          mkdir -p $HOME/Android || true
+          ls -la $HOME || true
+
       - name: Setup Android SDK (cmdline-tools + platform & build-tools)
         uses: android-actions/setup-android@v3
         with:
+          # install cmdline-tools + platform-tools + platform 28 + build-tools 28.0.1
           packages: 'cmdline-tools;latest,platform-tools,platforms;android-28,build-tools;28.0.1'
           accept-android-sdk-licenses: true
           log-accepted-android-sdk-licenses: true
 
-      - name: Ensure SDK folder and link to $HOME
+      - name: Debug: show sdkmanager and installed dirs
         run: |
           set -e
-          echo "ANDROID_SDK_ROOT = $ANDROID_SDK_ROOT"
-          mkdir -p "$ANDROID_SDK_ROOT"
-          # Ensure cmdline-tools and build-tools dirs exist after setup-android
-          ls -la "$ANDROID_SDK_ROOT" || true
+          echo "Where sdkmanager is:"
+          command -v sdkmanager || true
+          echo "List $HOME/Android/Sdk:"
+          ls -la $HOME/Android/Sdk || true
+          echo "List cmdline-tools:"
+          ls -la $HOME/Android/Sdk/cmdline-tools || true
+          echo "List build-tools:"
+          ls -la $HOME/Android/Sdk/build-tools || true
 
-          # Create symlink so tools expecting $HOME/.android/sdk will find it
-          mkdir -p "$HOME/.android"
-          rm -rf "$HOME/.android/sdk" || true
-          ln -sfn "$ANDROID_SDK_ROOT" "$HOME/.android/sdk"
-          echo "Linked $ANDROID_SDK_ROOT -> $HOME/.android/sdk"
-          ls -la "$HOME/.android" || true
+      - name: Link SDK into Buildozer expected location
+        run: |
+          set -e
+          mkdir -p ~/.buildozer/android/platform
+          ln -sfn $HOME/Android/Sdk $HOME/.buildozer/android/platform/android-sdk
+          echo "Linked $HOME/Android/Sdk -> $HOME/.buildozer/android/platform/android-sdk"
+          ls -la $HOME/.buildozer/android/platform || true
 
       - name: Verify installed build-tools and aidl
         run: |
           set -e
-          echo "Listing build-tools:"
-          ls -la "$ANDROID_SDK_ROOT/build-tools" || true
-
-          if [ -x "$ANDROID_SDK_ROOT/build-tools/28.0.1/aidl" ]; then
-            echo "aidl present: $ANDROID_SDK_ROOT/build-tools/28.0.1/aidl"
-            "$ANDROID_SDK_ROOT/build-tools/28.0.1/aidl" --help >/dev/null 2>&1 || true
+          if [ -x "$HOME/Android/Sdk/build-tools/28.0.1/aidl" ]; then
+            echo "aidl present: $HOME/Android/Sdk/build-tools/28.0.1/aidl"
+            "$HOME/Android/Sdk/build-tools/28.0.1/aidl" --help >/dev/null 2>&1 || true
           else
-            echo "aidl not found at $ANDROID_SDK_ROOT/build-tools/28.0.1/aidl"
-            ls -la "$ANDROID_SDK_ROOT/build-tools" || true
+            echo "aidl not found at expected path."
+            ls -la "$HOME/Android/Sdk/build-tools" || true
             exit 1
           fi
 
@@ -112,7 +126,8 @@ jobs:
           python-version: 3.8
           buildozer-cmd: buildozer -v android debug
         env:
-          ANDROID_SDK_ROOT: ${{ env.ANDROID_SDK_ROOT }}
+          # Make sure buildozer sees the SDK too (some actions respect env)
+          ANDROID_SDK_ROOT: $HOME/Android/Sdk
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
