@@ -224,7 +224,7 @@ jobs:
       - name: Build APK
         uses: digreatbrian/buildozer-action@v2
         with:
-          python-version: 3.8
+          python-version: 3.11
           buildozer-cmd: buildozer -v android debug
         env:
           ANDROID_SDK_ROOT: $HOME/Android/Sdk
