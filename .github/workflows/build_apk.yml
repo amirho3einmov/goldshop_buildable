@@ -7,9 +7,10 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+
+    # Use github.workspace (valid at workflow-evaluation time) for ANDROID_SDK_ROOT
     env:
-      # expand HOME at workflow-evaluation time so the action receives a real path
-      ANDROID_SDK_ROOT: ${{ env.HOME }}/.android/sdk
+      ANDROID_SDK_ROOT: ${{ github.workspace }}/.android/sdk
 
     steps:
       - name: Checkout repository
@@ -71,17 +72,31 @@ jobs:
       - name: Setup Android SDK (cmdline-tools + platform & build-tools)
         uses: android-actions/setup-android@v3
         with:
-          # Install commandline tools + platform-tools + platform 28 + build-tools 28.0.1
           packages: 'cmdline-tools;latest,platform-tools,platforms;android-28,build-tools;28.0.1'
           accept-android-sdk-licenses: true
           log-accepted-android-sdk-licenses: true
 
-      - name: Verify installed build-tools and aidl
+      - name: Ensure SDK folder and link to $HOME
         run: |
           set -e
           echo "ANDROID_SDK_ROOT = $ANDROID_SDK_ROOT"
+          mkdir -p "$ANDROID_SDK_ROOT"
+          # Ensure cmdline-tools and build-tools dirs exist after setup-android
           ls -la "$ANDROID_SDK_ROOT" || true
+
+          # Create symlink so tools expecting $HOME/.android/sdk will find it
+          mkdir -p "$HOME/.android"
+          rm -rf "$HOME/.android/sdk" || true
+          ln -sfn "$ANDROID_SDK_ROOT" "$HOME/.android/sdk"
+          echo "Linked $ANDROID_SDK_ROOT -> $HOME/.android/sdk"
+          ls -la "$HOME/.android" || true
+
+      - name: Verify installed build-tools and aidl
+        run: |
+          set -e
+          echo "Listing build-tools:"
           ls -la "$ANDROID_SDK_ROOT/build-tools" || true
+
           if [ -x "$ANDROID_SDK_ROOT/build-tools/28.0.1/aidl" ]; then
             echo "aidl present: $ANDROID_SDK_ROOT/build-tools/28.0.1/aidl"
             "$ANDROID_SDK_ROOT/build-tools/28.0.1/aidl" --help >/dev/null 2>&1 || true
@@ -90,12 +105,6 @@ jobs:
             ls -la "$ANDROID_SDK_ROOT/build-tools" || true
             exit 1
           fi
-
-      - name: Link SDK into Buildozer expected location
-        run: |
-          mkdir -p ~/.buildozer/android/platform
-          ln -sfn $HOME/.android/sdk ~/.buildozer/android/platform/android-sdk
-          echo "Linked $HOME/.android/sdk -> ~/.buildozer/android/platform/android-sdk"
 
       - name: Build APK
         uses: digreatbrian/buildozer-action@v2
