@@ -1,100 +1,103 @@
-name: Build Android APK (with logs upload)
+name: Build Android APK
 
 on:
   push:
     branches: [ main ]
 
-env:
-  LOG_DIR: ${{ github.workspace }}/logs
-  ANDROID_SDK_ROOT: ${{ github.workspace }}/Android/Sdk
-  ANDROID_HOME: ${{ github.workspace }}/Android/Sdk
-  PATH: ${{ github.workspace }}/.local/bin:${PATH}
-
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - name: Make logs dir
+      - name: Create logs directory
+        run: mkdir -p /tmp/build_logs
+
+      - name: Install system dependencies (robust, handles libtinfo)
         run: |
-          mkdir -p "$LOG_DIR"
+          set -e
 
-      - name: Install system dependencies (robust, handles libtinfo) and log
-        # we intentionally continue on error to collect logs even if this fails
-        continue-on-error: true
-        run: |
-          bash -lc 'set -o pipefail
-          (
-            echo "=== START: Install system dependencies ==="
-            sudo apt-get update
-            sudo apt-get install -y software-properties-common || true
-            sudo add-apt-repository -y universe || true
-            sudo apt-get update
-            wget -q http://security.ubuntu.com/ubuntu/pool/universe/n/ncurses/libtinfo5_6.3-2ubuntu0.1_amd64.deb || true
-            sudo apt install -y ./libtinfo5_6.3-2ubuntu0.1_amd64.deb || true
+          sudo apt-get update
+          sudo apt-get install -y software-properties-common || true
+          sudo add-apt-repository -y universe || true
+          sudo apt-get update
+          wget http://security.ubuntu.com/ubuntu/pool/universe/n/ncurses/libtinfo5_6.3-2ubuntu0.1_amd64.deb
+          sudo apt install ./libtinfo5_6.3-2ubuntu0.1_amd64.deb
 
-            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
-              git build-essential zip unzip openjdk-17-jdk \
-              autoconf automake libtool pkg-config zlib1g-dev \
-              libncurses5-dev libncursesw5-dev libtinfo6 cmake \
-              curl wget python3 python3-pip python3-venv python3-distutils || true
+          # نصب بسته‌های ضروری (بدون تلاش اجباری برای libtinfo5)
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            git build-essential zip unzip openjdk-17-jdk \
+            autoconf automake libtool pkg-config zlib1g-dev \
+            libncurses5-dev libncursesw5-dev libtinfo6 cmake \
+            curl wget python3 python3-pip python3-venv python3-distutils || true
 
-            if apt-cache policy libtinfo5 | grep -q 'Candidate:'; then
-              echo "libtinfo5 appears available; attempting install..."
-              sudo apt-get install -y libtinfo5 || echo "libtinfo5 install failed; will try fallbacks"
-            else
-              echo "libtinfo5 not in repo"
-            fi
+          # تلاش محتاطانه برای نصب libtinfo5 (در صورتی که در repo باشد)
+          if apt-cache policy libtinfo5 | grep -q 'Candidate:'; then
+            echo "libtinfo5 appears available in apt-cache; attempting install..."
+            sudo apt-get install -y libtinfo5 || echo "libtinfo5 install failed; will try fallbacks"
+          else
+            echo "libtinfo5 not available in apt repos on this runner (expected on newer Ubuntu)."
+          fi
 
-            if ! dpkg -s libtinfo5 >/dev/null 2>&1; then
-              sudo apt-get install -y libncurses5 || echo "libncurses5 install failed or unavailable"
-            fi
+          # اگر libtinfo5 نصب نشده، تلاش برای نصب libncurses5 به عنوان fallback
+          if ! dpkg -s libtinfo5 >/dev/null 2>&1; then
+            echo "libtinfo5 not present; ensuring libncurses5 is installed as fallback..."
+            sudo apt-get install -y libncurses5 || echo "libncurses5 install failed or unavailable"
+          fi
 
-            if ! ldconfig -p | grep -q 'libtinfo.so.5'; then
-              LIB6_PATH=$(ldconfig -p | grep 'libtinfo.so.6' | awk '\''{print $4; exit}'\'' || true)
-              if [ -n "$LIB6_PATH" ]; then
-                TARGET_DIR="/usr/lib/x86_64-linux-gnu"
-                [ -d "$TARGET_DIR" ] || TARGET_DIR="/lib/x86_64-linux-gnu"
-                if [ -d "$TARGET_DIR" ]; then
-                  sudo ln -sf "$LIB6_PATH" "$TARGET_DIR/libtinfo.so.5" || true
-                  sudo ldconfig || true
-                fi
+          # اگر هنوز libtinfo.so.5 در سیستم نیست، از libtinfo.so.6 یک symlink بساز
+          if ! ldconfig -p | grep -q 'libtinfo.so.5'; then
+            echo "libtinfo.so.5 not found; attempting to create compatibility symlink from libtinfo.so.6 ..."
+            LIB6_PATH=$(ldconfig -p | grep 'libtinfo.so.6' | awk '{print $4; exit}' || true)
+            if [ -n "$LIB6_PATH" ]; then
+              # مکان رایج برای لینک‌ها
+              TARGET_DIR="/usr/lib/x86_64-linux-gnu"
+              if [ ! -d "$TARGET_DIR" ]; then
+                TARGET_DIR="/lib/x86_64-linux-gnu"
               fi
+              if [ -d "$TARGET_DIR" ]; then
+                echo "Creating symlink: $TARGET_DIR/libtinfo.so.5 -> $LIB6_PATH"
+                sudo ln -sf "$LIB6_PATH" "$TARGET_DIR/libtinfo.so.5" || sudo ln -sf "$LIB6_PATH" /usr/lib/libtinfo.so.5 || true
+                sudo ldconfig || true
+              else
+                echo "Could not find a suitable directory for symlink; skipping symlink creation."
+              fi
+            else
+              echo "libtinfo.so.6 not found either; cannot create compatibility symlink."
             fi
+          else
+            echo "libtinfo.so.5 already present."
+          fi
 
-            echo "=== ldconfig -p | grep libtinfo ==="
-            ldconfig -p | grep libtinfo || true
-            echo "=== END: Install system dependencies ==="
-          ) 2>&1 | tee -a "$LOG_DIR/install-deps.log"'
-      
+          # نمایش نهایی برای دیباگ
+          echo "ldconfig -p | grep libtinfo:"
+          ldconfig -p | grep libtinfo || true
+
+          # WARNING, but do not fail the whole job here (change exit code if you want strict behavior)
+          if ! ldconfig -p | grep -q 'libtinfo.so.5'; then
+            echo "WARNING: libtinfo.so.5 is still not available. Some native tools may fail."
+            # If you prefer to fail the job instead of warning, uncomment next line:
+            # exit 1
+          else
+            echo "libtinfo.so.5 is available (installed or symlinked)."
+          fi
+        env:
+          DEBIAN_FRONTEND: noninteractive
+
       - name: Set up JDK 17 (must run before sdkmanager)
         uses: actions/setup-java@v3
         with:
           java-version: '17'
           distribution: 'temurin'
-        # allow step to fail but continue so we can collect logs/environment
-        continue-on-error: true
 
-      - name: Capture Java info
+      - name: Remove old Android SDK dirs (optional cleanup)
         run: |
-          bash -lc '(
-            echo "=== java -version ==="
-            java -XshowSettings:all -version 2>&1 || java -version 2>&1 || true
-            echo
-            echo "=== javac -version ==="
-            javac -version 2>&1 || true
-          ) 2>&1 | tee -a "$LOG_DIR/java-info.log"'
-
-      - name: Remove old Android SDK dirs (optional cleanup) and log
-        continue-on-error: true
-        run: |
-          bash -lc '(
-            set -e || true
-            echo "Removing old SDK dirs (if present)"
-            rm -rf $HOME/Android/Sdk || true
-            rm -rf $HOME/.android/sdk || true
-            ls -la $HOME || true
-          ) 2>&1 | tee -a "$LOG_DIR/cleanup-sdk.log"'
+          set -e
+          rm -rf $HOME/Android/Sdk || true
+          rm -rf $HOME/.android/sdk || true
+          # don't remove system-wide /usr/local/lib/android/sdk which setup-android may use
 
       - name: Setup Android SDK (cmdline-tools + platform & build-tools)
         uses: android-actions/setup-android@v3
@@ -102,192 +105,231 @@ jobs:
           packages: 'cmdline-tools;latest platform-tools platforms;android-28 build-tools;28.0.1'
           accept-android-sdk-licenses: true
           log-accepted-android-sdk-licenses: true
-        continue-on-error: true
 
-      - name: Capture sdkmanager / sdk folders
+      - name: Detect actual SDK root and create canonical links
+        id: detect_sdk
         run: |
-          bash -lc '(
-            echo "sdkmanager path: $(command -v sdkmanager || echo not-found)"
-            if command -v sdkmanager >/dev/null 2>&1; then
-              sdkmanager --list 2>&1 | sed -n "1,500p" || true
+          set -e
+          CANDIDATES=(
+            "$HOME/Android/Sdk"
+            "/usr/local/lib/android/sdk"
+            "$HOME/.android/sdk"
+            "/opt/android-sdk"
+          )
+
+          DETECTED=""
+          for p in "${CANDIDATES[@]}"; do
+            if [ -d "$p" ]; then
+              if [ -d "$p/cmdline-tools" ] || [ -d "$p/build-tools" ] || [ -d "$p/platform-tools" ]; then
+                DETECTED="$p"
+                break
+              fi
             fi
-            echo "--- ls $HOME/Android/Sdk ---"
-            ls -la "$HOME/Android/Sdk" || true
-          ) 2>&1 | tee -a "$LOG_DIR/sdk-info.log"'
+          done
 
-      - name: Detect actual SDK root and create canonical links (logged)
-        continue-on-error: true
+          if [ -z "$DETECTED" ]; then
+            SM=$(command -v sdkmanager || true)
+            if [ -n "$SM" ]; then
+              DETECTED=$(dirname $(dirname $(dirname "$SM")) )
+            fi
+          fi
+
+          if [ -z "$DETECTED" ]; then
+            echo "Could not detect Android SDK installation. Listing some dirs for debugging:"
+            ls -la /usr/local/lib || true
+            ls -la $HOME || true
+            exit 1
+          fi
+
+          echo "Detected SDK root: $DETECTED"
+          mkdir -p "$HOME/Android"
+          rm -rf "$HOME/Android/Sdk"
+          ln -sfn "$DETECTED" "$HOME/Android/Sdk"
+          echo "Linked $DETECTED -> $HOME/Android/Sdk"
+
+          mkdir -p "$HOME/.buildozer/android/platform"
+          ln -sfn "$DETECTED" "$HOME/.buildozer/android/platform/android-sdk"
+          echo "Linked $DETECTED -> $HOME/.buildozer/android/platform/android-sdk"
+
+          echo "::set-output name=sdk::$DETECTED"
+          ls -la "$DETECTED" || true
+          ls -la "$HOME/Android/Sdk" || true
+
+      - name: Create legacy tools/bin and symlink sdkmanager (for Buildozer)
         run: |
-          bash -lc '(
-            set -e || true
-            CANDIDATES=(
-              "$HOME/Android/Sdk"
-              "/usr/local/lib/android/sdk"
-              "$HOME/.android/sdk"
-              "/opt/android-sdk"
-            )
-            DETECTED=""
-            for p in "${CANDIDATES[@]}"; do
-              if [ -d "$p" ]; then
-                if [ -d "$p/cmdline-tools" ] || [ -d "$p/build-tools" ] || [ -d "$p/platform-tools" ]; then
-                  DETECTED="$p"
-                  break
-                fi
+          set -e
+          SDK_ROOT="$HOME/Android/Sdk"
+          echo "Creating legacy tools/bin under $SDK_ROOT if needed..."
+
+          # create legacy tools/bin path that some tools (Buildozer) expect
+          mkdir -p "$SDK_ROOT/tools/bin"
+
+          # try to find sdkmanager in common locations and symlink it into tools/bin
+          SDKMGR=""
+          # 1) cmdline-tools/latest/bin
+          if [ -x "$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" ]; then
+            SDKMGR="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          fi
+          # 2) cmdline-tools/<version>/bin (pick any)
+          if [ -z "$SDKMGR" ]; then
+            for d in "$SDK_ROOT/cmdline-tools"/*/bin/sdkmanager; do
+              if [ -x "$d" ]; then
+                SDKMGR="$d"
+                break
               fi
             done
-            if [ -z "$DETECTED" ]; then
-              SM=$(command -v sdkmanager || true)
-              if [ -n "$SM" ]; then
-                DETECTED=$(dirname $(dirname $(dirname "$SM")) )
-              fi
-            fi
-            if [ -z "$DETECTED" ]; then
-              echo "Could not detect Android SDK installation."
-            else
-              echo "Detected SDK root: $DETECTED"
-              mkdir -p "$HOME/Android"
-              rm -rf "$HOME/Android/Sdk"
-              ln -sfn "$DETECTED" "$HOME/Android/Sdk"
-              mkdir -p "$HOME/.buildozer/android/platform"
-              ln -sfn "$DETECTED" "$HOME/.buildozer/android/platform/android-sdk"
-              echo "Linked $DETECTED -> $HOME/Android/Sdk and to .buildozer"
-            fi
-            echo "ls -la detected (if any):"
-            [ -n "$DETECTED" ] && ls -la "$DETECTED" || true
-          ) 2>&1 | tee -a "$LOG_DIR/detect-sdk.log"'
+          fi
+          # 3) platform-tools or other locations
+          if [ -z "$SDKMGR" ] && command -v sdkmanager >/dev/null 2>&1; then
+            SDKMGR=$(command -v sdkmanager)
+          fi
 
-      - name: Create legacy tools/bin and symlink sdkmanager (for Buildozer) and log
+          if [ -z "$SDKMGR" ]; then
+            echo "sdkmanager not found; listing $SDK_ROOT contents for debug:"
+            ls -la "$SDK_ROOT" || true
+            exit 1
+          fi
+
+          echo "Found sdkmanager at: $SDKMGR"
+          ln -sfn "$SDKMGR" "$SDK_ROOT/tools/bin/sdkmanager"
+          echo "Created symlink: $SDK_ROOT/tools/bin/sdkmanager -> $SDKMGR"
+
+          # Optionally symlink avdmanager too if Buildozer or other scripts expect it
+          if [ -x "$(dirname "$SDKMGR")/avdmanager" ]; then
+            ln -sfn "$(dirname "$SDKMGR")/avdmanager" "$SDK_ROOT/tools/bin/avdmanager"
+            echo "Linked avdmanager"
+          fi
+
+          # ensure execute permissions
+          chmod +x "$SDK_ROOT/tools/bin/sdkmanager" || true
+          ls -la "$SDK_ROOT/tools/bin" || true
+
+      - name: Debug show sdkmanager and installed dirs
+        run: |
+          set -e
+          echo "sdkmanager path: $(command -v sdkmanager || echo 'not found')"
+          echo "Canonical SDK: $HOME/Android/Sdk"
+          ls -la $HOME/Android/Sdk || true
+          ls -la $HOME/Android/Sdk/tools || true
+          ls -la $HOME/Android/Sdk/tools/bin || true
+          ls -la $HOME/Android/Sdk/cmdline-tools || true
+          ls -la $HOME/Android/Sdk/build-tools || true
+
+      - name: Verify installed build-tools and aidl
+        run: |
+          set -e
+          if [ -x "$HOME/Android/Sdk/build-tools/28.0.1/aidl" ]; then
+            echo "aidl present"
+          else
+            echo "aidl NOT found; listing build-tools:"
+            ls -la "$HOME/Android/Sdk/build-tools" || true
+            exit 1
+          fi
+
+      - name: Build APK with detailed logging
+        id: build_apk
         continue-on-error: true
         run: |
-          bash -lc '(
-            set -e || true
-            SDK_ROOT="$HOME/Android/Sdk"
-            mkdir -p "$SDK_ROOT/tools/bin"
-            SDKMGR=""
-            if [ -x "$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" ]; then
-              SDKMGR="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
-            fi
-            if [ -z "$SDKMGR" ]; then
-              for d in "$SDK_ROOT/cmdline-tools"/*/bin/sdkmanager; do
-                if [ -x "$d" ]; then
-                  SDKMGR="$d"
-                  break
-                fi
-              done
-            fi
-            if [ -z "$SDKMGR" ] && command -v sdkmanager >/dev/null 2>&1; then
-              SDKMGR=$(command -v sdkmanager)
-            fi
-            if [ -z "$SDKMGR" ]; then
-              echo "sdkmanager not found; listing $SDK_ROOT for debug"
-              ls -la "$SDK_ROOT" || true
-            else
-              echo "Found sdkmanager at: $SDKMGR"
-              ln -sfn "$SDKMGR" "$SDK_ROOT/tools/bin/sdkmanager" || true
-              if [ -x "$(dirname "$SDKMGR")/avdmanager" ]; then
-                ln -sfn "$(dirname "$SDKMGR")/avdmanager" "$SDK_ROOT/tools/bin/avdmanager" || true
-              fi
-              chmod +x "$SDK_ROOT/tools/bin/sdkmanager" || true
-            fi
-            ls -la "$SDK_ROOT/tools/bin" || true
-          ) 2>&1 | tee -a "$LOG_DIR/symlink-sdkmanager.log"'
-
-      - name: Debug show sdkmanager and installed dirs (logged)
-        continue-on-error: true
-        run: |
-          bash -lc '(
-            echo "which sdkmanager: $(command -v sdkmanager || echo not-found)"
-            echo "Canonical SDK: $HOME/Android/Sdk"
-            ls -la $HOME/Android/Sdk || true
-            ls -la $HOME/Android/Sdk/tools || true
-            ls -la $HOME/Android/Sdk/tools/bin || true
-            ls -la $HOME/Android/Sdk/cmdline-tools || true
-            ls -la $HOME/Android/Sdk/build-tools || true
-          ) 2>&1 | tee -a "$LOG_DIR/debug-sdk-dirs.log"'
-
-      - name: Verify installed build-tools and aidl (logged)
-        continue-on-error: true
-        run: |
-          bash -lc '(
-            if [ -x "$HOME/Android/Sdk/build-tools/28.0.1/aidl" ]; then
-              echo "aidl present"
-            else
-              echo "aidl NOT found; listing build-tools:"
-              ls -la "$HOME/Android/Sdk/build-tools" || true
-              exit 2
-            fi
-          ) 2>&1 | tee -a "$LOG_DIR/verify-aidl.log"'
-
-      - name: Install buildozer (so we can run it locally) and log
-        continue-on-error: true
-        run: |
-          bash -lc '(
-            python3 -m pip install --user --upgrade pip wheel || true
-            python3 -m pip install --user buildozer Cython || true
-            echo "Installed buildozer at: $(which buildozer || echo not-found)"
-            buildozer --version 2>&1 || true
-          ) 2>&1 | tee -a "$LOG_DIR/install-buildozer.log"'
-
-      - name: Build APK (run buildozer and save console log)
-        # allow build to fail but we must capture its logs
-        continue-on-error: true
+          set -e
+          # Create build log file
+          BUILD_LOG="/tmp/build_logs/buildozer_build.log"
+          
+          echo "=== Buildozer Android Build Started ===" > $BUILD_LOG
+          echo "Build time: $(date)" >> $BUILD_LOG
+          echo "Current directory: $(pwd)" >> $BUILD_LOG
+          echo "Python version: $(python3 --version)" >> $BUILD_LOG
+          echo "Java version:" >> $BUILD_LOG
+          java -version 2>> $BUILD_LOG
+          
+          echo "=== Environment Variables ===" >> $BUILD_LOG
+          env | sort >> $BUILD_LOG
+          
+          echo "=== Android SDK Information ===" >> $BUILD_LOG
+          echo "ANDROID_SDK_ROOT: $ANDROID_SDK_ROOT" >> $BUILD_LOG
+          echo "ANDROID_HOME: $ANDROID_HOME" >> $BUILD_LOG
+          ls -la $ANDROID_SDK_ROOT >> $BUILD_LOG 2>&1 || true
+          
+          echo "=== Buildozer Version ===" >> $BUILD_LOG
+          buildozer --version >> $BUILD_LOG 2>&1 || echo "Buildozer not found or error" >> $BUILD_LOG
+          
+          echo "=== Starting Buildozer Build ===" >> $BUILD_LOG
+          # Run buildozer with detailed logging
+          buildozer -v android debug 2>&1 | tee -a $BUILD_LOG
+          
+          BUILD_EXIT_CODE=${PIPESTATUS[0]}
+          echo "Buildozer exit code: $BUILD_EXIT_CODE" >> $BUILD_LOG
+          
+          # Check if APK was created
+          if [ -f "./bin/*.apk" ]; then
+            echo "APK created successfully" >> $BUILD_LOG
+            ls -la ./bin/ >> $BUILD_LOG
+          else
+            echo "APK creation failed - no APK files found in ./bin/" >> $BUILD_LOG
+            echo "Contents of ./bin/ directory:" >> $BUILD_LOG
+            ls -la ./bin/ >> $BUILD_LOG 2>&1 || echo "bin directory not found" >> $BUILD_LOG
+          fi
+          
+          echo "=== Build Process Completed ===" >> $BUILD_LOG
+          exit $BUILD_EXIT_CODE
         env:
-          ANDROID_SDK_ROOT: ${{ github.workspace }}/Android/Sdk
-          ANDROID_HOME: ${{ github.workspace }}/Android/Sdk
+          ANDROID_SDK_ROOT: $HOME/Android/Sdk
+          ANDROID_HOME: $HOME/Android/Sdk
+
+      - name: Collect all logs and system information
+        if: always()
         run: |
-          bash -lc 'set -o pipefail
-          mkdir -p build_logs
-          echo "=== START BUILD ==="
-          # run buildozer and capture both stdout and stderr into logs/buildozer.log
-          # the job will continue even if buildozer exits non-zero because continue-on-error: true
-          buildozer -v android debug 2>&1 | tee -a "$LOG_DIR/buildozer.log"
-          echo "=== END BUILD ==="
-          # copy build logs to a predictable place
-          cp -a build_logs "$LOG_DIR/" 2>/dev/null || true
-          ls -la ./bin || true
-          ls -la "$LOG_DIR" || true'
+          set -e
+          LOG_DIR="/tmp/build_logs"
+          
+          # Collect system information
+          echo "=== System Information ===" > $LOG_DIR/system_info.log
+          uname -a >> $LOG_DIR/system_info.log
+          echo "---" >> $LOG_DIR/system_info.log
+          lsb_release -a >> $LOG_DIR/system_info.log 2>&1 || echo "lsb_release not available" >> $LOG_DIR/system_info.log
+          echo "---" >> $LOG_DIR/system_info.log
+          dpkg -l | grep -E "(java|android|sdk|ndk|buildozer|python)" >> $LOG_DIR/system_info.log 2>&1 || true
+          
+          # Collect environment info
+          echo "=== Final Environment ===" > $LOG_DIR/final_env.log
+          env | sort >> $LOG_DIR/final_env.log
+          
+          # Collect SDK directory structure
+          echo "=== SDK Directory Structure ===" > $LOG_DIR/sdk_structure.log
+          find $HOME/Android/Sdk -type f -name "*.exe" -o -name "*.bat" -o -name "*.cmd" -o -name "aidl" -o -name "sdkmanager" -o -name "avdmanager" | head -50 >> $LOG_DIR/sdk_structure.log
+          echo "---" >> $LOG_DIR/sdk_structure.log
+          ls -la $HOME/Android/Sdk/ >> $LOG_DIR/sdk_structure.log
+          echo "---" >> $LOG_DIR/sdk_structure.log
+          ls -la $HOME/Android/Sdk/build-tools/ >> $LOG_DIR/sdk_structure.log
+          
+          # Collect buildozer spec file if exists
+          if [ -f "buildozer.spec" ]; then
+            cp buildozer.spec $LOG_DIR/
+          fi
+          
+          # Create comprehensive log archive
+          cd /tmp
+          zip -r build_logs_complete.zip build_logs/
+          echo "Complete logs saved to: /tmp/build_logs_complete.zip"
 
-      - name: Collect additional workspace text logs (always)
-        if: ${{ always() }}
-        run: |
-          bash -lc '(
-            mkdir -p "$LOG_DIR/collected"
-            # copy usual build dirs if present
-            cp -a bin "$LOG_DIR/collected/" 2>/dev/null || true
-            cp -a .buildozer "$LOG_DIR/collected/" 2>/dev/null || true
-            cp -a .gradle "$LOG_DIR/collected/" 2>/dev/null || true
-            cp -a build "$LOG_DIR/collected/" 2>/dev/null || true
-
-            # collect small samples of environment and lists
-            echo "=== ENV ===" > "$LOG_DIR/collected/env.txt"
-            env >> "$LOG_DIR/collected/env.txt" || true
-
-            echo "=== PIP LIST ===" > "$LOG_DIR/collected/pip-list.txt"
-            pip3 list --format=columns >> "$LOG_DIR/collected/pip-list.txt" 2>/dev/null || true
-
-            # collect any .log, .txt, .out files (depth-limited)
-            find . -maxdepth 4 -type f \( -iname "*.log" -o -iname "*.txt" -o -iname "*.out" \) -print0 \
-              | xargs -0 -I{} bash -c 'mkdir -p "$LOG_DIR/collected/$(dirname "{}")"; cp -av "{}" "$LOG_DIR/collected/{}"' || true
-          ) 2>&1 | tee -a "$LOG_DIR/collect-additional.log"'
-
-      - name: Create logs.zip (always)
-        if: ${{ always() }}
-        run: |
-          bash -lc '(
-            cd "$(dirname "$LOG_DIR")" || true
-            # ensure a small manifest
-            echo "Generated on $(date -u)" > "$LOG_DIR/collected/manifest.txt" || true
-            zip -r "$LOG_DIR/../logs.zip" "$(basename "$LOG_DIR")" || true
-            echo "Created logs.zip at: $LOG_DIR/../logs.zip"
-            ls -lh "$LOG_DIR/../logs.zip" || true
-            unzip -l "$LOG_DIR/../logs.zip" || true
-          ) 2>&1 | tee -a "$LOG_DIR/create-zip.log"'
-
-      - name: Upload artifacts (APK + logs)
-        if: ${{ always() }}
+      - name: Upload APK artifacts
+        if: steps.build_apk.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
-          name: build-artifacts
-          path: |
-            ./bin/*.apk
-            ./logs.zip
+          name: android-apk
+          path: ./bin/*.apk
+
+      - name: Upload complete logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs-complete
+          path: /tmp/build_logs_complete.zip
+          retention-days: 7
+
+      - name: Upload individual log files
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: detailed-build-logs
+          path: /tmp/build_logs/
+          retention-days: 7
