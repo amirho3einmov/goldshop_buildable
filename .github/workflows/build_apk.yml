@@ -12,18 +12,81 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install system dependencies
+      - name: Install system dependencies (robust for libtinfo)
         run: |
           set -e
+
           sudo apt-get update
           sudo apt-get install -y software-properties-common || true
           sudo add-apt-repository -y universe || true
           sudo apt-get update
+
+          # install common packages (don't include libtinfo5 here)
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
-            git build-essential zip unzip openjdk-17-jdk \
-            autoconf automake libtool pkg-config zlib1g-dev \
-            libncurses5-dev libncursesw5-dev libtinfo6 cmake \
-            curl wget python3 python3-pip python3-venv python3-distutils || true
+            git \
+            build-essential \
+            zip \
+            unzip \
+            openjdk-17-jdk \
+            autoconf \
+            automake \
+            libtool \
+            pkg-config \
+            zlib1g-dev \
+            libncurses5-dev \
+            libncursesw5-dev \
+            libtinfo6 \
+            cmake \
+            curl \
+            wget \
+            python3 \
+            python3-pip \
+            python3-venv \
+            python3-distutils || true
+
+          # Try to install libtinfo5 if it's available in repos (some ubuntu images still have it)
+          if apt-cache policy libtinfo5 | grep -q 'Candidate:'; then
+            echo "Attempting to install libtinfo5 from apt..."
+            sudo apt-get install -y libtinfo5 || true
+          else
+            echo "libtinfo5 not in apt repos on this runner."
+          fi
+
+          # If libtinfo5 still not installed, try libncurses5 as a fallback
+          if ! dpkg -s libtinfo5 >/dev/null 2>&1; then
+            echo "libtinfo5 not installed; ensuring libncurses5 is present..."
+            sudo apt-get install -y libncurses5 || true
+          fi
+
+          # If no libtinfo.so.5 available, create a compatibility symlink from libtinfo.so.6 -> libtinfo.so.5
+          # This is a common workaround when only libtinfo6 is available.
+          if ! ldconfig -p | grep -q 'libtinfo.so.5'; then
+            echo "libtinfo.so.5 not found; attempting to symlink libtinfo.so.6 -> libtinfo.so.5"
+            LIB6_PATH=$(ldconfig -p | grep 'libtinfo.so.6' | awk '{print $4; exit}')
+            if [ -n "$LIB6_PATH" ]; then
+              # figure out target dir for 64-bit libs (common locations)
+              DIR="/usr/lib/x86_64-linux-gnu"
+              if [ ! -d "$DIR" ]; then
+                DIR="/lib/x86_64-linux-gnu"
+              fi
+              echo "Found libtinfo6 at: $LIB6_PATH, creating symlink in $DIR"
+              sudo ln -sf "$LIB6_PATH" "$DIR/libtinfo.so.5" || sudo ln -sf "$LIB6_PATH" /usr/lib/libtinfo.so.5 || true
+              sudo ldconfig || true
+              echo "Symlink created (if permissions allowed)."
+            else
+              echo "libtinfo.so.6 not found either — cannot create compatibility symlink."
+            fi
+          else
+            echo "libtinfo.so.5 already present."
+          fi
+
+          # final sanity check
+          if ldconfig -p | grep -q 'libtinfo.so.5'; then
+            echo "libtinfo.so.5 is available (either installed or symlinked)."
+          else
+            echo "WARNING: libtinfo.so.5 is still not available. Some native tools may fail."
+          fi
+
 
       - name: Set up JDK 17 (must run before sdkmanager)
         uses: actions/setup-java@v3
