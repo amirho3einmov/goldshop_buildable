@@ -13,7 +13,9 @@ jobs:
   build:
     runs-on: ubuntu-latest
     env:
-      ANDROID_SDK_ROOT: ${{ runner.home }}/.android/sdk
+      # Use shell $HOME instead of invalid expression runner.home
+      ANDROID_SDK_ROOT: $HOME/.android/sdk
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -89,19 +91,17 @@ jobs:
           packages: 'cmdline-tools;latest,platform-tools'
 
       - name: Ensure ANDROID_SDK_ROOT and install specific build-tools (28.0.1)
-        env:
-          ANDROID_SDK_ROOT: ${{ runner.home }}/.android/sdk
-          PATH: ${{ runner.home }}/.android/sdk/cmdline-tools/latest/bin:${{ runner.home }}/.android/sdk/platform-tools:${{ env.PATH }}
         run: |
           set -e
           mkdir -p "$ANDROID_SDK_ROOT"
+
+          # Add sdkmanager to PATH at runtime using $ANDROID_SDK_ROOT
+          export PATH="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$ANDROID_SDK_ROOT/platform-tools:$PATH"
 
           # If sdkmanager is not on PATH, try to locate it in common locations
           if ! command -v sdkmanager >/dev/null 2>&1; then
             if [ -x "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" ]; then
               export PATH="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$PATH"
-            elif [ -x "$HOME/.android/sdk/cmdline-tools/latest/bin/sdkmanager" ]; then
-              export PATH="$HOME/.android/sdk/cmdline-tools/latest/bin:$PATH"
             fi
           fi
 
@@ -136,7 +136,8 @@ jobs:
           python-version: 3.8
           buildozer-cmd: buildozer -v android debug
         env:
-          ANDROID_SDK_ROOT: ${{ runner.home }}/.android/sdk
+          # pass SDK root into the build step as well
+          ANDROID_SDK_ROOT: $HOME/.android/sdk
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
