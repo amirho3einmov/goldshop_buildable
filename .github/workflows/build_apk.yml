@@ -20,6 +20,8 @@ jobs:
           sudo apt-get install -y software-properties-common || true
           sudo add-apt-repository -y universe || true
           sudo apt-get update
+          wget http://security.ubuntu.com/ubuntu/pool/universe/n/ncurses/libtinfo5_6.3-2ubuntu0.1_amd64.deb
+          sudo apt install ./libtinfo5_6.3-2ubuntu0.1_amd64.deb
 
           # نصب بسته‌های ضروری (بدون تلاش اجباری برای libtinfo5)
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
