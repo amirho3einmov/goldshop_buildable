@@ -25,47 +25,22 @@ jobs:
             libncurses5-dev libncursesw5-dev libtinfo6 cmake \
             curl wget python3 python3-pip python3-venv python3-distutils || true
 
-          # libtinfo5 fallback (if needed)
-          if ! dpkg -s libtinfo5 >/dev/null 2>&1; then
-            if sudo apt-get install -y libtinfo5; then
-              echo "libtinfo5 installed."
-            elif sudo apt-get install -y libncurses5; then
-              echo "libncurses5 installed as fallback."
-            else
-              wget -q http://security.ubuntu.com/ubuntu/pool/universe/n/ncurses/libtinfo5_6.3-2ubuntu0.1_amd64.deb -O libtinfo5.deb || true
-              if [ -f libtinfo5.deb ]; then
-                sudo apt-get install -y ./libtinfo5.deb || sudo dpkg -i libtinfo5.deb || true
-                sudo apt-get install -f -y || true
-                rm -f libtinfo5.deb
-              else
-                echo "libtinfo5 unavailable; proceeding."
-              fi
-            fi
-          fi
-
       - name: Set up JDK 17 (must run before sdkmanager)
         uses: actions/setup-java@v3
         with:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Print Java info (debug)
-        run: |
-          java -version || true
-          echo "JAVA_HOME=$JAVA_HOME" || true
-
       - name: Remove old Android SDK dirs (optional cleanup)
         run: |
           set -e
-          # remove only common old locations to avoid mixing installs
           rm -rf $HOME/Android/Sdk || true
           rm -rf $HOME/.android/sdk || true
-          # don't remove /usr/local/lib/android/sdk because setup-android may write there
+          # don't remove system-wide /usr/local/lib/android/sdk which setup-android may use
 
       - name: Setup Android SDK (cmdline-tools + platform & build-tools)
         uses: android-actions/setup-android@v3
         with:
-          # IMPORTANT: space-separated list
           packages: 'cmdline-tools;latest platform-tools platforms;android-28 build-tools;28.0.1'
           accept-android-sdk-licenses: true
           log-accepted-android-sdk-licenses: true
@@ -74,7 +49,6 @@ jobs:
         id: detect_sdk
         run: |
           set -e
-          # possible install locations used by setup-android and sdkmanager
           CANDIDATES=(
             "$HOME/Android/Sdk"
             "/usr/local/lib/android/sdk"
@@ -85,7 +59,6 @@ jobs:
           DETECTED=""
           for p in "${CANDIDATES[@]}"; do
             if [ -d "$p" ]; then
-              # consider it detected if it contains cmdline-tools or build-tools or platform-tools
               if [ -d "$p/cmdline-tools" ] || [ -d "$p/build-tools" ] || [ -d "$p/platform-tools" ]; then
                 DETECTED="$p"
                 break
@@ -93,46 +66,91 @@ jobs:
             fi
           done
 
-          # As a last resort, look for sdkmanager binary in PATH and infer its SDK root
           if [ -z "$DETECTED" ]; then
             SM=$(command -v sdkmanager || true)
             if [ -n "$SM" ]; then
-              # typical: /usr/local/lib/android/sdk/cmdline-tools/16.0/bin/sdkmanager
               DETECTED=$(dirname $(dirname $(dirname "$SM")) )
             fi
           fi
 
           if [ -z "$DETECTED" ]; then
-            echo "Could not detect Android SDK installation. Listing /usr/local/lib/android and $HOME:"
-            ls -la /usr/local/lib/android || true
+            echo "Could not detect Android SDK installation. Listing some dirs for debugging:"
+            ls -la /usr/local/lib || true
             ls -la $HOME || true
             exit 1
           fi
 
           echo "Detected SDK root: $DETECTED"
-          # create a canonical $HOME/Android/Sdk pointing to it (so later steps can use $HOME/Android/Sdk)
           mkdir -p "$HOME/Android"
           rm -rf "$HOME/Android/Sdk"
           ln -sfn "$DETECTED" "$HOME/Android/Sdk"
           echo "Linked $DETECTED -> $HOME/Android/Sdk"
 
-          # also ensure Buildozer's expected location points to the same SDK
           mkdir -p "$HOME/.buildozer/android/platform"
           ln -sfn "$DETECTED" "$HOME/.buildozer/android/platform/android-sdk"
           echo "Linked $DETECTED -> $HOME/.buildozer/android/platform/android-sdk"
 
-          # emit output for debugging
           echo "::set-output name=sdk::$DETECTED"
           ls -la "$DETECTED" || true
           ls -la "$HOME/Android/Sdk" || true
-          ls -la "$HOME/.buildozer/android/platform" || true
+
+      - name: Create legacy tools/bin and symlink sdkmanager (for Buildozer)
+        run: |
+          set -e
+          SDK_ROOT="$HOME/Android/Sdk"
+          echo "Creating legacy tools/bin under $SDK_ROOT if needed..."
+
+          # create legacy tools/bin path that some tools (Buildozer) expect
+          mkdir -p "$SDK_ROOT/tools/bin"
+
+          # try to find sdkmanager in common locations and symlink it into tools/bin
+          SDKMGR=""
+          # 1) cmdline-tools/latest/bin
+          if [ -x "$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" ]; then
+            SDKMGR="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          fi
+          # 2) cmdline-tools/<version>/bin (pick any)
+          if [ -z "$SDKMGR" ]; then
+            for d in "$SDK_ROOT/cmdline-tools"/*/bin/sdkmanager; do
+              if [ -x "$d" ]; then
+                SDKMGR="$d"
+                break
+              fi
+            done
+          fi
+          # 3) platform-tools or other locations
+          if [ -z "$SDKMGR" ] && command -v sdkmanager >/dev/null 2>&1; then
+            SDKMGR=$(command -v sdkmanager)
+          fi
+
+          if [ -z "$SDKMGR" ]; then
+            echo "sdkmanager not found; listing $SDK_ROOT contents for debug:"
+            ls -la "$SDK_ROOT" || true
+            exit 1
+          fi
+
+          echo "Found sdkmanager at: $SDKMGR"
+          ln -sfn "$SDKMGR" "$SDK_ROOT/tools/bin/sdkmanager"
+          echo "Created symlink: $SDK_ROOT/tools/bin/sdkmanager -> $SDKMGR"
+
+          # Optionally symlink avdmanager too if Buildozer or other scripts expect it
+          if [ -x "$(dirname "$SDKMGR")/avdmanager" ]; then
+            ln -sfn "$(dirname "$SDKMGR")/avdmanager" "$SDK_ROOT/tools/bin/avdmanager"
+            echo "Linked avdmanager"
+          fi
+
+          # ensure execute permissions
+          chmod +x "$SDK_ROOT/tools/bin/sdkmanager" || true
+          ls -la "$SDK_ROOT/tools/bin" || true
 
       - name: Debug show sdkmanager and installed dirs
         run: |
           set -e
           echo "sdkmanager path: $(command -v sdkmanager || echo 'not found')"
-          echo "ANDROID_SDK (canonical): $HOME/Android/Sdk"
+          echo "Canonical SDK: $HOME/Android/Sdk"
           ls -la $HOME/Android/Sdk || true
+          ls -la $HOME/Android/Sdk/tools || true
+          ls -la $HOME/Android/Sdk/tools/bin || true
           ls -la $HOME/Android/Sdk/cmdline-tools || true
           ls -la $HOME/Android/Sdk/build-tools || true
 
@@ -140,13 +158,10 @@ jobs:
         run: |
           set -e
           if [ -x "$HOME/Android/Sdk/build-tools/28.0.1/aidl" ]; then
-            echo "aidl present: $HOME/Android/Sdk/build-tools/28.0.1/aidl"
-            "$HOME/Android/Sdk/build-tools/28.0.1/aidl" --help >/dev/null 2>&1 || true
+            echo "aidl present"
           else
-            echo "aidl not found at expected path:"
+            echo "aidl NOT found; listing build-tools:"
             ls -la "$HOME/Android/Sdk/build-tools" || true
-            echo "Also show contents of detected SDK root (for debugging):"
-            ls -la "$(cat $GITHUB_WORKSPACE/.github/workflows || echo '')" || true
             exit 1
           fi
 
@@ -156,7 +171,6 @@ jobs:
           python-version: 3.8
           buildozer-cmd: buildozer -v android debug
         env:
-          # ensure Buildozer step sees canonical SDK path
           ANDROID_SDK_ROOT: $HOME/Android/Sdk
           ANDROID_HOME: $HOME/Android/Sdk
 
