@@ -81,8 +81,6 @@ jobs:
             echo "libtinfo.so.5 is available (installed or symlinked)."
           fi
 
-
-
       - name: Set up JDK 17 (must run before sdkmanager)
         uses: actions/setup-java@v3
         with:
@@ -232,8 +230,57 @@ jobs:
           ANDROID_SDK_ROOT: $HOME/Android/Sdk
           ANDROID_HOME: $HOME/Android/Sdk
 
-      - name: Upload artifacts
+      # ---------------------------
+      # NEW: collect logs and make a single zip
+      # ---------------------------
+      - name: Collect logs and create zip
+        run: |
+          set -e
+          mkdir -p logs
+
+          # copy common build artefacts / folders if present (no-fail)
+          cp -a .buildozer logs/ 2>/dev/null || true
+          cp -a bin logs/ 2>/dev/null || true
+          cp -a build logs/ 2>/dev/null || true
+          cp -a .gradle logs/ 2>/dev/null || true
+          cp -a .cache logs/ 2>/dev/null || true
+
+          # capture useful command outputs to files
+          echo "=== ENV ===" > logs/env.txt
+          env >> logs/env.txt || true
+
+          echo "=== JAVA VERSION / SETTINGS ===" > logs/java.txt
+          java -XshowSettings:all -version 2>&1 | sed -n '1,500p' > logs/java.txt || java -version 2>&1 > logs/java.txt || true
+
+          echo "=== SDKMANAGER LIST ===" > logs/sdkmanager_list.txt
+          if command -v sdkmanager >/dev/null 2>&1; then
+            sdkmanager --list 2>&1 | sed -n '1,1000p' > logs/sdkmanager_list.txt || true
+          else
+            echo "sdkmanager not found" >> logs/sdkmanager_list.txt
+          fi
+
+          echo "=== PIP LIST ===" > logs/pip_list.txt
+          pip3 list --format=columns > logs/pip_list.txt || pip list --format=columns > logs/pip_list.txt || true
+
+          echo "=== SAMPLE LS from SDK and workspace ===" > logs/ls_samples.txt
+          ls -la "$HOME/Android/Sdk" 2>&1 | sed -n '1,200p' >> logs/ls_samples.txt || true
+          ls -la . 2>&1 | sed -n '1,200p' >> logs/ls_samples.txt || true
+
+          # find text/log files under workspace (limited depth) and copy them into logs/collected_logs
+          mkdir -p logs/collected_logs
+          find . -maxdepth 4 -type f \( -iname "*.log" -o -iname "*.txt" -o -iname "*.out" -o -iname "buildozer*log*" \) -print0 \
+            | xargs -0 -I{} bash -c 'mkdir -p "logs/collected_logs/$(dirname "{}")"; cp -av "{}" "logs/collected_logs/{}"' || true
+
+          # pack everything into a zip (zip is installed earlier)
+          zip -r logs.zip logs || true
+
+          echo "Created logs.zip with contents:"
+          unzip -l logs.zip || true
+
+      - name: Upload artifacts (APK + logs)
         uses: actions/upload-artifact@v4
         with:
-          name: package
-          path: ./bin/*.apk
+          name: build-artifacts
+          path: |
+            ./bin/*.apk
+            ./logs.zip
