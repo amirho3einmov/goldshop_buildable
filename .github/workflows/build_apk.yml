@@ -192,6 +192,19 @@ jobs:
             ls -la "$HOME/Android/Sdk/build-tools" || true
             exit 1
           fi
+      - name: Install NDK 27.3.13750724 via sdkmanager (if missing)
+        run: |
+          yes | $HOME/Android/Sdk/cmdline-tools/latest/bin/sdkmanager --sdk_root=$HOME/Android/Sdk "ndk;27.3.13750724" || true
+          ls -la $HOME/Android/Sdk/ndk || true
+
+      - name: Clear build cache and set NDK env
+        run: |
+          rm -rf .buildozer || true
+        env:
+          ANDROID_NDK_HOME: $HOME/Android/Sdk/ndk/27.3.13750724
+          ANDROID_NDK_ROOT: $HOME/Android/Sdk/ndk/27.3.13750724
+          ANDROIDNDK: $HOME/Android/Sdk/ndk/27.3.13750724
+
 
       - name: Build APK
         uses: digreatbrian/buildozer-action@v2
