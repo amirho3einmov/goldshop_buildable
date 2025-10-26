@@ -7,10 +7,6 @@ source.dir = .
 source.include_exts = py,kv,png,jpg,jpeg,json,ttf
 version = 0.1
 orientation = portrait
-android.ndk = 23b
-android.sdk = 28
-android.minapi = 21
-android.api = 28
 # فایلِ اصلی شما:
 # (اگر main.py نامِ فایل اصلی است، buildozer به طور پیش‌فرض main.py را اجرا می‌کند)
 # (در غیر این صورت مقدار entrypoint را تنظیم کن)
