@@ -2,218 +2,83 @@ name: Build Android APK
 
 on:
   push:
-    branches: [ main ]
+    branches:
+      - main
 
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-- name: Install system dependencies (robust, adds libltdl + m4 + libtool-bin)
-  run: |
-    set -e
+      - name: Install system dependencies (robust, adds libltdl + m4 + libtool-bin)
+        run: |
+          set -e
+          sudo apt-get update
+          sudo add-apt-repository -y universe || true
+          sudo apt-get update
 
-    sudo apt-get update
-    sudo add-apt-repository -y universe || true
-    sudo apt-get update
+          # core packages needed by autotools and p4a
+          sudo apt-get install -y git build-essential zip unzip openjdk-17-jdk \
+            autoconf automake libtool libtool-bin m4 pkg-config \
+            autoconf-archive autotools-dev dh-autoreconf gettext \
+            zlib1g-dev libncurses5-dev libncursesw5-dev cmake \
+            curl wget python3 python3-pip python3-venv python3-distutils \
+            patch libffi-dev || true
 
-    sudo apt-get install -y git build-essential zip unzip openjdk-17-jdk \
-      autoconf automake libtool libtool-bin m4 pkg-config \
-      autoconf-archive autotools-dev dh-autoreconf gettext \
-      zlib1g-dev libncurses5-dev libncursesw5-dev cmake \
-      curl wget python3 python3-pip python3-venv python3-distutils \
-      patch libffi-dev || true
+          # libltdl macros required by autoreconf for libffi
+          sudo apt-get install -y libltdl-dev || sudo apt-get install -y libltdl7-dev || true
 
-    # install libltdl dev macros (provides ltdl.m4)
-    sudo apt-get install -y libltdl-dev || sudo apt-get install -y libltdl7-dev || true
+          # optional libtinfo5 fallback (keeps compatibility on some runners)
+          wget -q http://security.ubuntu.com/ubuntu/pool/universe/n/ncurses/libtinfo5_6.3-2ubuntu0.1_amd64.deb || true
+          sudo apt install -y ./libtinfo5_6.3-2ubuntu0.1_amd64.deb || true
 
-    # libtinfo fallback
-    wget -q http://security.ubuntu.com/ubuntu/pool/universe/n/ncurses/libtinfo5_6.3-2ubuntu0.1_amd64.deb || true
-    sudo apt install -y ./libtinfo5_6.3-2ubuntu0.1_amd64.deb || true
+          echo "=== dpkg: relevant packages ==="
+          dpkg -l libtool libtool-bin m4 autoconf automake libltdl-dev libltdl7-dev libffi-dev || true
 
-    echo "=== dpkg: relevant packages ==="
-    dpkg -l libtool libtool-bin m4 autoconf automake libltdl-dev libltdl7-dev libffi-dev || true
+          if command -v aclocal >/dev/null 2>&1; then
+            echo "aclocal dir:" && aclocal --print-acdir || true
+          fi
 
-    if command -v aclocal >/dev/null 2>&1; then
-      echo "aclocal dir:" && aclocal --print-acdir || true
-    fi
+          echo "=== ltdl macro locations (if present) ==="
+          ls -la /usr/share/aclocal/ltdl.m4 /usr/share/aclocal/*ltdl* 2>/dev/null || true
 
-    echo "=== ltdl macro locations (if present) ==="
-    ls -la /usr/share/aclocal/ltdl.m4 /usr/share/aclocal/*ltdl* 2>/dev/null || true
+          # upgrade pip and install python build tools used by buildozer/p4a
+          python3 -m pip install --upgrade pip setuptools wheel
+          python3 -m pip install --upgrade cython python-for-android buildozer || true
 
-    # upgrade pip and install python build tools
-    python3 -m pip install --upgrade pip setuptools wheel
-    python3 -m pip install --upgrade cython python-for-android buildozer || true
+          # safe single-line version checks
+          python3 -c "import importlib,sys; 
+p4a = importlib.import_module('pythonforandroid'); 
+print('python-for-android:', getattr(p4a,'__version__','unknown'))" || echo "python-for-android import failed"
+          python3 -c "import Cython as _c; print('Cython:', getattr(_c,'__version__','unknown'))" || echo "Cython import failed"
 
-    # print version info (one-liners to avoid heredoc quoting issues)
-    python3 -c "import importlib; 
-import sys
-try:
-  p4a = importlib.import_module('pythonforandroid')
-  print('python-for-android:', getattr(p4a,'__version__', p4a))
-except Exception as e:
-  print('python-for-android import error:', e)"
-    python3 -c "import Cython; print('Cython', getattr(Cython,'__version__', Cython))"
-
-
-
-
-
-      - name: Set up JDK 17 (must run before sdkmanager)
+      - name: Set up JDK 17
         uses: actions/setup-java@v3
         with:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Remove old Android SDK dirs (optional cleanup)
-        run: |
-          set -e
-          rm -rf $HOME/Android/Sdk || true
-          rm -rf $HOME/.android/sdk || true
-          # don't remove system-wide /usr/local/lib/android/sdk which setup-android may use
-
       - name: Setup Android SDK (cmdline-tools + platform & build-tools)
         uses: android-actions/setup-android@v3
         with:
-          packages: 'cmdline-tools;latest platform-tools platforms;android-28 build-tools;28.0.1'
+          packages: 'cmdline-tools;latest platform-tools platforms;android-34 build-tools;36.1.0'
           accept-android-sdk-licenses: true
           log-accepted-android-sdk-licenses: true
 
-      - name: Detect actual SDK root and create canonical links
-        id: detect_sdk
+      - name: Confirm NDK available and prepare env
         run: |
-          set -e
-          CANDIDATES=(
-            "$HOME/Android/Sdk"
-            "/usr/local/lib/android/sdk"
-            "$HOME/.android/sdk"
-            "/opt/android-sdk"
-          )
-
-          DETECTED=""
-          for p in "${CANDIDATES[@]}"; do
-            if [ -d "$p" ]; then
-              if [ -d "$p/cmdline-tools" ] || [ -d "$p/build-tools" ] || [ -d "$p/platform-tools" ]; then
-                DETECTED="$p"
-                break
-              fi
-            fi
-          done
-
-          if [ -z "$DETECTED" ]; then
-            SM=$(command -v sdkmanager || true)
-            if [ -n "$SM" ]; then
-              DETECTED=$(dirname $(dirname $(dirname "$SM")) )
-            fi
-          fi
-
-          if [ -z "$DETECTED" ]; then
-            echo "Could not detect Android SDK installation. Listing some dirs for debugging:"
-            ls -la /usr/local/lib || true
-            ls -la $HOME || true
-            exit 1
-          fi
-
-          echo "Detected SDK root: $DETECTED"
-          mkdir -p "$HOME/Android"
-          rm -rf "$HOME/Android/Sdk"
-          ln -sfn "$DETECTED" "$HOME/Android/Sdk"
-          echo "Linked $DETECTED -> $HOME/Android/Sdk"
-
-          mkdir -p "$HOME/.buildozer/android/platform"
-          ln -sfn "$DETECTED" "$HOME/.buildozer/android/platform/android-sdk"
-          echo "Linked $DETECTED -> $HOME/.buildozer/android/platform/android-sdk"
-
-          echo "::set-output name=sdk::$DETECTED"
-          ls -la "$DETECTED" || true
-          ls -la "$HOME/Android/Sdk" || true
-
-      - name: Create legacy tools/bin and symlink sdkmanager (for Buildozer)
-        run: |
-          set -e
-          SDK_ROOT="$HOME/Android/Sdk"
-          echo "Creating legacy tools/bin under $SDK_ROOT if needed..."
-
-          # create legacy tools/bin path that some tools (Buildozer) expect
-          mkdir -p "$SDK_ROOT/tools/bin"
-
-          # try to find sdkmanager in common locations and symlink it into tools/bin
-          SDKMGR=""
-          # 1) cmdline-tools/latest/bin
-          if [ -x "$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" ]; then
-            SDKMGR="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
-          fi
-          # 2) cmdline-tools/<version>/bin (pick any)
-          if [ -z "$SDKMGR" ]; then
-            for d in "$SDK_ROOT/cmdline-tools"/*/bin/sdkmanager; do
-              if [ -x "$d" ]; then
-                SDKMGR="$d"
-                break
-              fi
-            done
-          fi
-          # 3) platform-tools or other locations
-          if [ -z "$SDKMGR" ] && command -v sdkmanager >/dev/null 2>&1; then
-            SDKMGR=$(command -v sdkmanager)
-          fi
-
-          if [ -z "$SDKMGR" ]; then
-            echo "sdkmanager not found; listing $SDK_ROOT contents for debug:"
-            ls -la "$SDK_ROOT" || true
-            exit 1
-          fi
-
-          echo "Found sdkmanager at: $SDKMGR"
-          ln -sfn "$SDKMGR" "$SDK_ROOT/tools/bin/sdkmanager"
-          echo "Created symlink: $SDK_ROOT/tools/bin/sdkmanager -> $SDKMGR"
-
-          # Optionally symlink avdmanager too if Buildozer or other scripts expect it
-          if [ -x "$(dirname "$SDKMGR")/avdmanager" ]; then
-            ln -sfn "$(dirname "$SDKMGR")/avdmanager" "$SDK_ROOT/tools/bin/avdmanager"
-            echo "Linked avdmanager"
-          fi
-
-          # ensure execute permissions
-          chmod +x "$SDK_ROOT/tools/bin/sdkmanager" || true
-          ls -la "$SDK_ROOT/tools/bin" || true
-
-      - name: Debug show sdkmanager and installed dirs
-        run: |
-          set -e
-          echo "sdkmanager path: $(command -v sdkmanager || echo 'not found')"
-          echo "Canonical SDK: $HOME/Android/Sdk"
-          ls -la $HOME/Android/Sdk || true
-          ls -la $HOME/Android/Sdk/tools || true
-          ls -la $HOME/Android/Sdk/tools/bin || true
-          ls -la $HOME/Android/Sdk/cmdline-tools || true
-          ls -la $HOME/Android/Sdk/build-tools || true
-
-      - name: Verify installed build-tools and aidl
-        run: |
-          set -e
-          if [ -x "$HOME/Android/Sdk/build-tools/28.0.1/aidl" ]; then
-            echo "aidl present"
-          else
-            echo "aidl NOT found; listing build-tools:"
-            ls -la "$HOME/Android/Sdk/build-tools" || true
-            exit 1
-          fi
-      - name: Install NDK 27.3.13750724 via sdkmanager (if missing)
-        run: |
-          yes | $HOME/Android/Sdk/cmdline-tools/latest/bin/sdkmanager --sdk_root=$HOME/Android/Sdk "ndk;27.3.13750724" || true
-          ls -la $HOME/Android/Sdk/ndk || true
-
-      - name: Clear build cache and set NDK env
-        run: |
+          echo "NDK locations under /usr/local/lib/android/sdk/ndk and $HOME/Android/Sdk/ndk:"
+          ls -la /usr/local/lib/android/sdk/ndk 2>/dev/null || true
+          ls -la $HOME/Android/Sdk/ndk 2>/dev/null || true
+          # clean previous build cache (important when changing NDK/p4a)
           rm -rf .buildozer || true
         env:
-          ANDROID_NDK_HOME: $HOME/Android/Sdk/ndk/27.3.13750724
-          ANDROID_NDK_ROOT: $HOME/Android/Sdk/ndk/27.3.13750724
-          ANDROIDNDK: $HOME/Android/Sdk/ndk/27.3.13750724
-
+          # change this to a valid NDK >= 25 if your runner uses a different path
+          ANDROID_NDK_HOME: /usr/local/lib/android/sdk/ndk/27.3.13750724
+          ANDROID_NDK_ROOT: /usr/local/lib/android/sdk/ndk/27.3.13750724
+          ANDROIDNDK: /usr/local/lib/android/sdk/ndk/27.3.13750724
 
       - name: Build APK
         uses: digreatbrian/buildozer-action@v2
@@ -223,9 +88,32 @@ except Exception as e:
         env:
           ANDROID_SDK_ROOT: $HOME/Android/Sdk
           ANDROID_HOME: $HOME/Android/Sdk
+          ANDROID_NDK_HOME: /usr/local/lib/android/sdk/ndk/27.3.13750724
+          ANDROID_NDK_ROOT: /usr/local/lib/android/sdk/ndk/27.3.13750724
+          ANDROIDNDK: /usr/local/lib/android/sdk/ndk/27.3.13750724
 
-      - name: Upload artifacts
+      - name: Collect logs and create zip
+        if: ${{ always() }}
+        run: |
+          set -e
+          mkdir -p logs
+          cp -a .buildozer logs/ 2>/dev/null || true
+          cp -a bin logs/ 2>/dev/null || true
+          echo "=== ENV ===" > logs/env.txt
+          env >> logs/env.txt || true
+          echo "=== SDKMANAGER LIST ===" > logs/sdkmanager_list.txt
+          if command -v sdkmanager >/dev/null 2>&1; then
+            sdkmanager --list 2>&1 | sed -n '1,1000p' > logs/sdkmanager_list.txt || true
+          else
+            echo "sdkmanager not found" >> logs/sdkmanager_list.txt
+          fi
+          zip -r logs.zip logs || true
+          echo "Created logs.zip"
+
+      - name: Upload artifacts (APK + logs)
         uses: actions/upload-artifact@v4
         with:
-          name: package
-          path: ./bin/*.apk                                  اینو یجوری کن تمام لاگ ها رو توی یک فایل زیپ به من بده تا برای تو بفرستم تا درستش کنی
+          name: build-artifacts
+          path: |
+            ./bin/*.apk
+            ./logs.zip
